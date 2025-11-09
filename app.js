@@ -21,6 +21,7 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
 
 // === Hilfsfunktionen =========================================================
 const app = document.getElementById('app');
+const sendRow = (row) => (window.sendRow ? window.sendRow(row) : console.log('[sendRow fallback]', row));
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
@@ -251,24 +252,45 @@ function viewNegotiate(errorMsg){
       return;
     }
 
-    // Auto-Accept prüfen (NEU: inkl. 4.700–4.800 €)
+    // SOFORT-ANNAHME (deine Regel + bisherige Schwelle)
     if (shouldAutoAccept(state.initial_offer, state.min_price, num)) {
       state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: num, accepted: true });
       state.accepted = true; state.finished = true;
-      logEvent('round', { runde: state.runde, algo_offer: state.current_offer, counter: num, accepted:true });
+
+      // → Zeile in "Daten" + Tagesreiter
+      sendRow({
+        participant_id: state.participant_id,
+        runde: state.runde,
+        algo_offer: state.current_offer,
+        proband_counter: num,
+        accepted: true,
+        finished: true,
+        deal_price: num
+      });
+
       viewThink(() => viewFinish(true));
       return;
     }
 
-    // Nächstes Angebot berechnen
-    const next = computeNextOffer(state.current_offer, state.min_price, num, state.runde, state.last_concession);
-    const concession = state.current_offer - next;
+    // Normale Runde (kein sofortiges Annehmen)
+    const prevOffer = state.current_offer;
+    const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
+    const concession = prevOffer - next;
 
-    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: num, accepted:false });
+    // → Zeile in "Daten": eine Zeile pro Runde
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: false,
+      finished: false
+    });
+
+    // Zustand aktualisieren
+    state.history.push({ runde: state.runde, algo_offer: prevOffer, proband_counter: num, accepted:false });
     state.current_offer = next;
     state.last_concession = concession;
-
-    logEvent('round', { runde: state.runde, counter: num, new_offer: next, concession });
 
     if (state.runde >= CONFIG.MAX_RUNDEN) {
       state.finished = true;
@@ -278,6 +300,32 @@ function viewNegotiate(errorMsg){
       viewThink(() => viewNegotiate());
     }
   }
+
+  // Button-Klick
+  sendBtn.addEventListener('click', handleSubmit);
+  // ENTER im Eingabefeld
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); }
+  });
+
+  // Proband nimmt Verkäufer-Angebot an
+  document.getElementById('acceptBtn').addEventListener('click', () => {
+    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
+    state.accepted = true; state.finished = true;
+
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: true,
+      finished: true,
+      deal_price: state.current_offer
+    });
+
+    viewThink(() => viewFinish(true));
+  });
+}
 
   // Klick auf „Gegenangebot senden“
   sendBtn.addEventListener('click', handleSubmit);
@@ -301,7 +349,7 @@ function viewNegotiate(errorMsg){
 }
 
 function viewDecision(){
-  // Letzte Runde erreicht – Proband kann letztes Angebot annehmen oder ohne Einigung beenden
+  // Letzte Runde erreicht – Annehmen oder ohne Einigung beenden
   app.innerHTML = `
     <h1>Letzte Runde der Verhandlung erreicht.</h1>
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
@@ -316,19 +364,41 @@ function viewDecision(){
 
     ${historyTable()}
   `;
+
   document.getElementById('takeBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
-    logEvent('finish_accept', { last_round: state.runde, last_offer: state.current_offer });
+
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: true,
+      finished: true,
+      deal_price: state.current_offer
+    });
+
     viewThink(() => viewFinish(true));
   });
+
   document.getElementById('noBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:false });
     state.accepted = false; state.finished = true;
-    logEvent('finish_no', { last_round: state.runde, last_offer: state.current_offer });
+
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: false,
+      finished: true
+    });
+
     viewThink(() => viewFinish(false));
   });
 }
+
 
 function viewFinish(accepted){
   app.innerHTML = `
@@ -357,5 +427,6 @@ function viewFinish(accepted){
 
 // === Startbildschirm =========================================================
 viewVignette();
+
 
 

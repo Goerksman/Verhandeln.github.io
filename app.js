@@ -129,23 +129,55 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
 function viewVignette(){
   app.innerHTML = `
     <h1>Designer-Verkaufsmesse</h1>
+
     <p class="muted">Stelle dir folgende Situation vor:</p>
-    <p>Du bist auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
-       Eine Person möchte ihr <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
-       Ihr verhandelt gleich über den Verkaufspreis.</p>
-    <p>Auf der nächsten Seite beginnt die Preisverhandlung mit der Verkäuferseite.
-       Du kannst jeweils ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen.</p>
+
+    <p>
+      Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
+      Eine Besucherin bzw. ein Besucher möchte ihre/seine <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
+      Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design.
+      Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne
+      liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
+      verhandelt über den Verkaufspreis.
+    </p>
+
+    <p>
+      Auf der nächsten Seite beginnt die Preisverhandlung mit der <b>Verkäuferseite</b>.
+      Du kannst ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen. Achte darauf, dass die Messe
+      gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in
+      die Verhandlung geht.
+    </p>
+
+    <p class="muted"><b>Hinweis:</b> Die Verhandlung umfasst maximal ${CONFIG.MAX_RUNDEN} Runden.</p>
+
     <div class="grid">
-      <div class="pill">max. ${CONFIG.MAX_RUNDEN} Runden</div>
-      <button id="startBtn">Verhandlung starten</button>
+      <label class="consent">
+        <input id="consent" type="checkbox" />
+        <span>Ich stimme zu, dass meine Eingaben zu <b>forschenden Zwecken</b> gespeichert und anonym ausgewertet werden dürfen.</span>
+      </label>
+
+      <div>
+        <button id="startBtn" disabled>Verhandlung starten</button>
+      </div>
     </div>
   `;
-  document.getElementById('startBtn').addEventListener('click', () => {
+
+  const consent = document.getElementById('consent');
+  const startBtn = document.getElementById('startBtn');
+
+  // Button nur aktiv, wenn Häkchen gesetzt ist
+  const sync = () => { startBtn.disabled = !consent.checked; };
+  consent.addEventListener('change', sync);
+  sync();
+
+  startBtn.addEventListener('click', () => {
+    if (!consent.checked) return; // doppelte Absicherung
     state = newState();
-    logEvent('start', { probandCode: window.probandCode, playerId: window.playerId, state });
+    logEvent('start', { probandCode: window.probandCode, playerId: window.playerId, consent: true });
     viewNegotiate();
   });
 }
+
 
 function viewThink(next){
   const delay = randInt(CONFIG.THINK_DELAY_MS_MIN, CONFIG.THINK_DELAY_MS_MAX);
@@ -300,3 +332,4 @@ function viewFinish(accepted){
 
 // === Startbildschirm =========================================================
 viewVignette();
+

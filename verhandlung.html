@@ -1,0 +1,1336 @@
+# verhandlung_app.py
+# -*- coding: utf-8 -*-
+"""
+Einfache Web-App für eine rundenbasierte Verkaufsverhandlung (max. 6 Runden).
+- Python/Flask (Single-File), keine Datenbank nötig.
+- Speichert Eingaben automatisch in einer Excel-Datei (openpyxl) mit Dateisperre.
+- UI in Grau/Weiß, Startseite zeigt QR-Code + Link.
+- **Vignette** vor Verhandlungsbeginn (Designer-Verkaufsmesse, alte Designer-Ledercouch).
+- **Harter** Verhandlungsalgorithmus (Boulware-ähnlich) + **Auto-Akzeptanz** (Default 12 % unter Erstangebot).
+- **Nachdenk-Pause** zwischen Gegenangebot und neuem Gegenvorschlag (menschlicher Effekt).
+
+WICHTIG (Fehler-Fixes & Notebook-Modus):
+- Einige Umgebungen haben kein funktionierendes `_multiprocessing` → Debugger/ReLoader automatisch deaktivieren.
+- `SystemExit: 1` beim Werkzeug-Threaded-Server → Starten ohne Threading; Fallback auf `wsgiref` (Single-Thread).
+- **Jupyter-/VS Code-Notebook**: Die App kann in einem **Hintergrund-Thread** starten und zeigt **klickbare Links** (lokal & optional öffentlicher Tunnel via ngrok). Im Notebook wird automatisch die **Vignette** verlinkt.
+
+So nutzt du das in **VS Code – Jupyter Notebook** (Zell-für-Zell):
+1) **Installation** (als Notebook-Zelle ausführen):
+   ```bash
+   # Basis
+   pip install flask qrcode[pil] openpyxl filelock
+   # Für öffentlichen Handy-Link (optional):
+   pip install pyngrok
+   ```
+2) **Konfiguration (optional)** – als Notebook-Zelle (für öffentlichen Link):
+   ```python
+   import os
+   os.environ["ENABLE_TUNNEL"] = "1"          # öffentlichen NGROK-Link erstellen (optional)
+   os.environ["NGROK_AUTHTOKEN"] = "<dein-token>"  # https://dashboard.ngrok.com/get-started/your-authtoken
+   # Feintuning:
+   # os.environ["ACCEPT_MARGIN"] = "0.12"       # 12 % Default
+   # os.environ["INITIAL_OFFER"] = "5500"      # Erstangebot €
+   # os.environ["MIN_PRICE"] = "4000"          # fester Mindestpreis € (überschreibt MIN_PRICE_FACTOR)
+   # os.environ["MIN_PRICE_FACTOR"] = "0.70"   # Mindestpreis = Faktor * INITIAL_OFFER
+   # os.environ["HOST"] = "0.0.0.0"            # für LAN-Zugriff
+   # os.environ["PORT"] = "5000"
+   # os.environ["THINK_DELAY_MS_MIN"] = "1200"  # Nachdenk-Pause min (ms)
+   # os.environ["THINK_DELAY_MS_MAX"] = "2800"  # Nachdenk-Pause max (ms)
+   ```
+3) **Diese komplette Datei in eine Notebook-Zelle kopieren** und ausführen. Die Zelle startet die App im Hintergrund,
+   zeigt dir die **Vignette-Links** (lokal & ggf. öffentlich) und öffnet lokal einen Browser-Tab.
+
+CLI (ohne Notebook):
+```bash
+# venv (optional)
+python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install flask qrcode[pil] openpyxl filelock
+python verhandlung_app.py
+```
+
+Tests (starten keinen Server):
+```bash
+RUN_TESTS=1 python verhandlung_app.py
+```
+"""
+
+import os
+import io
+import uuid
+import socket
+import threading
+import time
+import base64
+import random
+import webbrowser
+from datetime import datetime
+import math
+from typing import Dict, Any, Optional
+
+from flask import (
+    Flask, request, session, redirect, url_for, make_response,
+    render_template_string, jsonify
+)
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+# Excel
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
+from filelock import FileLock
+
+# QR
+import qrcode
+
+# -------------- Konfiguration --------------
+
+# Verhindere, dass Unternehmens-Proxies 127.0.0.1 blocken (Windows/Notebook-Umgebungen)
+# Beeinflusst nur diesen Prozess.
+for _k in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"): os.environ.pop(_k, None)
+os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
+
+
+SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "change-me-please")
+EXCEL_PATH = os.getenv("EXCEL_PATH", "verhandlung_daten.xlsx")
+LOCK_PATH = EXCEL_PATH + ".lock"
+MAX_RUNDEN = 6
+
+# Erstangebot & Mindestpreis
+try:
+    INITIAL_OFFER = float(os.getenv("INITIAL_OFFER", "5500"))
+except Exception:
+    INITIAL_OFFER = 5500.0
+
+if os.getenv("MIN_PRICE") is not None:
+    try:
+        MIN_PRICE = float(os.getenv("MIN_PRICE"))
+    except Exception:
+        MIN_PRICE = INITIAL_OFFER * float(os.getenv("MIN_PRICE_FACTOR", "0.70"))
+else:
+    MIN_PRICE = INITIAL_OFFER * float(os.getenv("MIN_PRICE_FACTOR", "0.70"))
+
+# Akzeptanz-Marge (z. B. 0.10–0.15). Default: 0.12 (12 %)
+try:
+    # Default-Schwellwert etwas strenger, damit ~4.700 € bereits akzeptiert werden (bei 5.500 € Erstangebot ≈ 14,5 % unter Start)
+    ACCEPT_MARGIN = float(os.getenv("ACCEPT_MARGIN", "0.145"))
+except Exception:
+    ACCEPT_MARGIN = 0.12
+
+# Denk-Pause (ms)
+try:
+    THINK_DELAY_MS_MIN = int(os.getenv("THINK_DELAY_MS_MIN", "1200"))
+    THINK_DELAY_MS_MAX = int(os.getenv("THINK_DELAY_MS_MAX", "2800"))
+    if THINK_DELAY_MS_MAX < THINK_DELAY_MS_MIN:
+        THINK_DELAY_MS_MAX = THINK_DELAY_MS_MIN
+except Exception:
+    THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX = 1200, 2800
+
+# Host/Port konfigurierbar
+# Fix: Standardmäßig an 127.0.0.1 binden, um 0.0.0.0-Missverständnisse zu vermeiden
+HOST = os.getenv("HOST", "127.0.0.1")
+try:
+    PORT = int(os.getenv("PORT", "5000"))
+except Exception:
+    PORT = 5000
+
+# Für Deployment hinter Proxy (Render/Railway/ngrok) wichtig, um korrekte URL zu bekommen
+# und HTTPS weitergereicht zu bekommen.
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+# Erlaube Endpunkte mit und ohne abschließenden Slash (z.B. /vignette und /vignette/)
+app.url_map.strict_slashes = False
+
+
+# -------------- Hilfsfunktionen --------------
+
+def supports_multiprocessing():
+    """Prüft, ob `_multiprocessing` importiert werden kann."""
+    try:
+        import multiprocessing  # noqa: F401
+        import _multiprocessing  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def in_notebook():
+    try:
+        from IPython import get_ipython  # type: ignore
+        ip = get_ipython()
+        if not ip:
+            return False
+        return hasattr(ip, "kernel")
+    except Exception:
+        return False
+
+
+def format_eur(value):
+    """Formatiert Zahlen als Euro mit deutscher Notation (1.234,56 €)."""
+    if value is None:
+        return "-"
+    try:
+        v = float(value)
+    except Exception:
+        return "-"
+    s = f"{v:,.2f}"  # z. B. 1,234.56
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")  # 1.234,56
+    return f"{s} €"
+
+
+def ensure_workbook(path=EXCEL_PATH):
+    """Stellt sicher, dass die Arbeitsmappe und das Blatt 'Daten' existieren
+    und die Kopfzeile im Daten-Blatt vorhanden ist.
+    """
+    headers = [
+        "timestamp_iso", "participant_id", "runde",
+        "algo_offer", "proband_counter", "accepted", "finished"
+    ]
+    if not os.path.exists(path):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Daten"
+        ws.append(headers)
+        for idx, _ in enumerate(headers, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = 20
+        wb.save(path)
+        return
+
+    # Datei existiert bereits → sicherstellen, dass 'Daten' vorhanden ist
+    wb = load_workbook(path)
+    if "Daten" not in wb.sheetnames:
+        ws = wb.create_sheet("Daten", 0)
+        ws.append(headers)
+        for idx, _ in enumerate(headers, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = 20
+        wb.save(path)
+        return
+
+    # Header nachziehen, falls versehentlich entfernt wurde
+    ws = wb["Daten"]
+    first_cell = ws.cell(1, 1).value
+    if first_cell != "timestamp_iso":
+        ws.insert_rows(1)
+        for col, val in enumerate(headers, start=1):
+            ws.cell(1, col, val)
+        for idx, _ in enumerate(headers, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = 20
+        wb.save(path)
+    
+
+
+def append_row_to_excel(row, path=EXCEL_PATH):
+    """Thread/Prozess-sicheres Anhängen an **Blatt 'Daten'** via Datei-Sperre.
+    (WICHTIG: nicht mehr wb.active verwenden, damit Datumssheets nicht geflutet werden.)
+    """
+    ensure_workbook(path)
+    lock = FileLock(LOCK_PATH)
+    with lock:
+        wb = load_workbook(path)
+        # Immer explizit auf das Log-Blatt 'Daten' schreiben
+        if "Daten" not in wb.sheetnames:
+            # Absicherung (sollte durch ensure_workbook schon existieren)
+            ws = wb.create_sheet("Daten", 0)
+            ws.append([
+                "timestamp_iso", "participant_id", "runde",
+                "algo_offer", "proband_counter", "accepted", "finished"
+            ])
+        else:
+            ws = wb["Daten"]
+        ws.append(row)
+        wb.save(path)
+
+
+def upsert_counter_to_datesheet(participant_id: str, runde: int, counter_value: float, path=EXCEL_PATH, date_label: Optional[str] = None):
+    """
+    Schreibt/aktualisiert das Gegenangebot (counter_value) in ein Datumssheet:
+    - Sheet-Name = YYYY-MM-DD (lokales Datum)
+    - Spalte A: participant_id
+    - Spalten B..G: r1..r6 (Gegenangebote pro Runde)
+    Thread-/Prozess-sicher via FileLock.
+    """
+    if date_label is None:
+        date_label = datetime.now().date().isoformat()
+
+    ensure_workbook(path)
+    lock = FileLock(LOCK_PATH)
+    with lock:
+        wb = load_workbook(path)
+
+        # Sheet holen/erstellen
+        if date_label in wb.sheetnames:
+            ws = wb[date_label]
+        else:
+            ws = wb.create_sheet(title=date_label)
+            headers = ["participant_id"] + [f"r{i}" for i in range(1, MAX_RUNDEN + 1)]
+            ws.append(headers)
+            # Spaltenbreite setzen
+            for idx in range(1, len(headers) + 1):
+                ws.column_dimensions[get_column_letter(idx)].width = 18
+
+        # Teilnehmer-Zeile finden/erzeugen
+        row_idx = None
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, 1).value == participant_id:
+                row_idx = r
+                break
+        if row_idx is None:
+            row_idx = ws.max_row + 1
+            ws.cell(row_idx, 1, participant_id)
+
+        # Runde in Spalte eintragen (B..G = r1..r6)
+        col = 1 + int(runde)  # r1→2, r2→3, ...
+        if 2 <= col <= 1 + MAX_RUNDEN:
+            try:
+                ws.cell(row_idx, col, float(counter_value))
+            except Exception:
+                ws.cell(row_idx, col, str(counter_value))
+
+        wb.save(path)
+
+
+def now_iso():
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def public_base_url():
+    """
+    Ermittelt die öffentliche Basis-URL:
+    - Wenn PUBLIC_BASE_URL gesetzt ist, nimm diese.
+    - Sonst nimm request.url_root (automatisch korrekt bei Deployment/Ngrok).
+    """
+    env_url = os.getenv("PUBLIC_BASE_URL")
+    if env_url:
+        if not env_url.endswith("/"):
+            env_url += "/"
+        return env_url
+    return request.url_root
+
+
+def init_state():
+    """
+    Initialisiert den Verhandlungszustand in der Session.
+    Die App repräsentiert die **Verkäuferseite**.
+    """
+    participant_id = str(uuid.uuid4())
+    state = {
+        "participant_id": participant_id,
+        "runde": 1,
+        "min_price": float(MIN_PRICE),
+        "max_price": float(INITIAL_OFFER),
+        "initial_offer": float(INITIAL_OFFER),
+        "current_offer": float(INITIAL_OFFER),
+        "history": [],
+        "last_concession": None
+    }
+    session["state"] = state
+    return state
+
+
+def get_state():
+    state = session.get("state")
+    if not state:
+        state = init_state()
+    return state
+
+
+def round_down_increment(value: float, inc: float) -> float:
+    try:
+        return math.floor(float(value) / inc) * inc
+    except Exception:
+        return float(value)
+
+
+def compute_next_offer(prev_offer, min_price, proband_counter, runde, last_concession=None):
+    """
+    Angepasste harte Strategie (Boulware-ähnlich) mit Mindest-/Höchst-Schrittweiten
+    und rundenabhängiger Rundung:
+    - Runden 1–3: "schöne" Preise in 50-€-Schritten (z.B. 5300, 5050),
+      Mindestnachlass auch bei hohen Gegenangeboten ≈ 180–260 €,
+      bei sehr niedrigen Gegenangeboten bis zu ≈ 300–400 € möglich.
+    - Ab Runde 4: feinere Zahlen erlaubt; Mindestnachlass ~100–200 € je nach Gegenangebot.
+    - Angebot fällt monoton und nie unter min_price.
+    """
+    prev = float(prev_offer)
+    m = float(min_price)
+    r = int(max(1, min(runde, MAX_RUNDEN)))
+
+    dp = r / MAX_RUNDEN
+    deadline_pressure = dp ** 4
+
+    # Standardwerte, falls kein Gegenangebot vorliegt
+    if proband_counter is None:
+        if r <= 3:
+            step = 150.0
+            tentative = prev - step
+            tentative = round_down_increment(max(m, tentative), 50.0)
+        else:
+            step = 100.0
+            tentative = max(m, prev - step)
+        next_offer = round(tentative, 2)
+        if next_offer > prev:
+            next_offer = round(max(m, prev - 50.0), 2)
+        return next_offer
+
+    # Es gibt ein Gegenangebot
+    counter = float(proband_counter)
+    gap = max(prev - counter, 0.0)  # wie weit der Käufer unter dem aktuellen Angebot liegt
+
+    # Reaktionsstärke: Anteil der Lücke, den wir in dieser Runde zugeben
+    beta = 0.12 + 0.10 * deadline_pressure  # 12% (früh) .. 22% (spät)
+    proposed_step = gap * beta
+
+    # High/Low-Angebot unterscheiden relativ zum aktuellen Angebot
+    high_offer = counter >= (prev - 1800.0)  # "vernünftiges" Angebot relativ nah am Preis
+
+    if r <= 3:
+        # Frühe Runden: runde Preise, definierte Bandbreiten
+        if high_offer:
+            min_step, max_step = 180.0, 260.0  # Ziel ≈ 200 € Nachlass
+        else:
+            if r == 1:
+                 # Runde 1 darf bis 300 €, aber nicht zwingend exakt 300
+                 min_step, max_step = 240.0, 300.0
+            else:
+                 # Ab Runde 2: unter 300 € 
+                 min_step, max_step = 200.0, 250.0
+        inc = 50.0
+    else:
+        # Spätere Runden: feinere Abstufung
+        if high_offer:
+            min_step, max_step = 120.0, 260.0
+        else:
+            min_step, max_step = 200.0, 250.0
+        inc = 1.0
+
+    step = proposed_step
+    if step < min_step:
+        step = min_step
+    if step > max_step:
+        step = max_step
+
+    # Runde-spezifische Deckelung: nur Runde 1 darf bis 300 €, danach < 300
+    cap = 300.0 if r == 1 else 250.0
+    if step > cap:
+        step = cap
+
+    tentative = prev - step
+    tentative = max(m, tentative)
+
+    # Rundung anwenden
+    if inc == 50.0:
+        tentative = round_down_increment(tentative, 50.0)
+    next_offer = round(tentative, 2)
+    # --- Final: rundenabhängige Deckelung & Anti-Wiederholung ---
+    cap_final = 300.0 if r == 1 else 250.0
+    new_cons = round(prev - next_offer, 2)
+    if new_cons > cap_final:
+        if inc == 50.0:
+            target = max(m, prev - cap_final)
+            next_offer = round_down_increment(target, 50.0)
+        else:
+            next_offer = round(max(m, prev - cap_final), 2)
+        new_cons = round(prev - next_offer, 2)
+
+    if last_concession is not None:
+        try:
+            last_cons = float(last_concession)
+        except Exception:
+            last_cons = None
+        if last_cons is not None and abs(new_cons - last_cons) < 0.5:
+            if inc == 50.0:
+                # 50er-Raster leicht variieren (max. Cap beachten)
+                cand1 = max(min_step, min(cap_final, new_cons - 50.0))
+                cand2 = max(min_step, min(cap_final, new_cons + 50.0))
+                alt_cons = cand1 if cand1 >= min_step else cand2
+                alt_offer = max(m, prev - alt_cons)
+                next_offer = round_down_increment(alt_offer, 50.0)
+            else:
+                # späte Runden: 10 € Variation (mit Cap)
+                cand1 = max(min_step, min(cap_final, new_cons - 10.0))
+                cand2 = max(min_step, min(cap_final, new_cons + 10.0))
+                alt_cons = cand1 if cand1 >= min_step else cand2
+                next_offer = round(max(m, prev - alt_cons), 2)
+
+
+    # Monotonie sicherstellen
+    if next_offer > prev:
+        fallback = prev - (50.0 if r <= 3 else 10.0)
+        next_offer = round(max(m, fallback), 2)
+
+    return next_offer   
+
+
+def should_auto_accept(initial_offer, min_price, counter):
+    """Entscheidet, ob die Verkäuferseite das Gegenangebot sofort akzeptiert."""
+    margin = ACCEPT_MARGIN if 0.0 < ACCEPT_MARGIN < 0.5 else 0.12
+    threshold = max(min_price, float(initial_offer) * (1.0 - margin))
+    return float(counter) >= threshold
+
+
+# -------------- Layout --------------
+
+BASE_FRAME = """
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verkaufsmesse – Designer-Ledercouch</title>
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --fg: #222;
+      --muted: #6b7280;
+      --card: #ffffff;
+      --accent: #e5e7eb;
+      --btn: #1f2937;
+      --btn-fg: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .wrap { max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    .card {
+      background: var(--card); border: 1px solid var(--accent);
+      border-radius: 16px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 12px; }
+    h2 { font-size: 1.2rem; margin: 24px 0 12px; color: var(--muted); }
+    .muted { color: var(--muted); }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .row > * { flex: 1; }
+    input[type=number] {
+      width: 100%; padding: 12px; border: 1px solid var(--accent);
+      border-radius: 10px; font-size: 1rem; background: #fbfbfb;
+    }
+    button {
+      appearance: none; border: none; background: var(--btn); color: var(--btn-fg);
+      padding: 12px 16px; border-radius: 12px; cursor: pointer; font-weight: 600;
+    }
+    .ghost { background: transparent; color: var(--fg); border: 1px solid var(--accent); }
+    .pill { display: inline-block; padding: 6px 10px; border-radius: 999px; background: #eef0f3; color: #111; font-weight: 600; }
+    .grid { display: grid; gap: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--accent); }
+    .qr-box { display: flex; gap: 16px; align-items: center; }
+    .center { text-align: center; }
+    .spacer { height: 8px; }
+    a { color: inherit; }
+    .pulse { animation: pulse 1.3s ease-in-out infinite; opacity: 0.8; }
+    @keyframes pulse { 0%{opacity:.5} 50%{opacity:1} 100%{opacity:.5} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      {{ body|safe }}
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+def render_page(body_html, **ctx):
+    # Stets format_eur & delays zur Verfügung stellen
+    ctx.setdefault("format_eur", format_eur)
+    return render_template_string(BASE_FRAME, body=render_template_string(body_html, **ctx))
+
+
+# -------------- Seiten-Body-Templates --------------
+
+HOME_BODY = """
+<h1>Verkaufsmesse – Designer-Ledercouch</h1>
+<p class="muted">Scanne den QR-Code oder öffne den Link, um die Informationen zur Situation zu lesen und anschließend die Verhandlung zu starten.</p>
+
+<div class="qr-box">
+  <div>
+    <img alt="QR-Code zum Start" src="{{ url_for('qr') }}?u={{ start_url|urlencode }}" style="width:140px;height:140px;border:1px solid var(--accent);border-radius:8px;background:#fff;" />
+  </div>
+  <div>
+    <div class="pill">Schnellstart-Link</div>
+    <div class="spacer"></div>
+    <div><a href="{{ start_url }}">{{ start_url }}</a></div>
+    <p class="muted" style="margin-top:8px;">Der Link führt zuerst zu einer kurzen Einordnung der Situation.</p>
+  </div>
+</div>
+
+<h2>Los geht's</h2>
+<form method="get" action="{{ url_for('vignette') }}">
+  <button>Informationen lesen</button>
+</form>
+"""
+
+VIGNETTE_BODY = """
+<h1>Designer-Verkaufsmesse</h1>
+<p class=\"muted\">Stelle dir folgende Situation vor:</p>
+<p>Du befindest dich auf einer <strong>exklusiven Verkaufsmesse</strong> für Designermöbel. Eine Besucherin bzw. ein Besucher möchte ihre/sein
+<strong>gebrauchtes Designer-Ledersofa</strong> verkaufen. Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design. Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne liegt typischerweise zwischen 2.500 € und 10.000 €.
+Du kommst ins Gespräch und ihr verhandelt über den Verkaufspreis.</p>
+<p>Auf der nächsten Seite beginnt die Preisverhandlung mit der <strong>Verkäuferseite</strong>. Du kannst ein <strong>Gegenangebot</strong> eingeben oder das Angebot annehmen.
+Achte darauf, dass die Messe gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in die Verhandlung geht.</p>
+<p class=\"muted\">Hinweis: Die Verhandlung umfasst maximal {{ max_runden }} Runden.</p>
+
+{% if error %}
+  <p style=\"color:#b91c1c;\"><strong>Hinweis:</strong> {{ error }}</p>
+{% endif %}
+
+<form method=\"post\" action=\"{{ url_for('start') }}\">
+  <div class=\"card\" style=\"background:#fbfbfb;border:1px solid var(--accent);border-radius:12px;padding:12px;margin:12px 0;\">
+    <label style=\"display:flex; gap:10px; align-items:flex-start;\">
+      <input type=\"checkbox\" id=\"consent\" name=\"consent\" required style=\"margin-top:4px;\"/>
+      <span>Ich stimme zu, dass meine Eingaben zu <strong>forschenden Zwecken</strong> gespeichert und anonym ausgewertet werden dürfen.</span>
+    </label>
+  </div>
+  <button>Verhandlung starten</button>
+</form>
+"""
+
+NEGOTIATE_BODY = """
+<h1>Verkaufsverhandlung</h1>
+<p class="muted">Teilnehmer-ID: {{ state.participant_id }}</p>
+
+<div class="grid">
+  <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
+    <div><strong>Aktuelles Angebot der Verkäuferseite:</strong> {{ format_eur(state.current_offer) }}</div>
+  </div>
+
+  <form method="post" action="{{ url_for('offer') }}">
+    <label for="counter">Dein Gegenangebot in €</label>
+    <div class="row">
+      <input type=\"number\" step=\"0.01\" min=\"0\" id=\"counter\" name=\"counter\" required \/>
+      <button type="submit">Gegenangebot senden</button>
+    </div>
+    
+  </form>
+
+  <form method="post" action="{{ url_for('accept') }}">
+    <button class="ghost" type="submit">Angebot annehmen &amp; Verhandlung beenden</button>
+  </form>
+</div>
+
+{% if state.history %}
+  <h2>Verlauf</h2>
+  <table>
+    <thead>
+      <tr><th>Runde</th><th>Angebot Verkäuferseite</th><th>Gegenangebot</th><th>Angenommen?</th></tr>
+    </thead>
+    <tbody>
+      {% for h in state.history %}
+        <tr>
+          <td>{{ h.runde }}</td>
+          <td>{{ format_eur(h.algo_offer) }}</td>
+          <td>
+            {% if h.proband_counter is not none %}
+              {{ format_eur(h.proband_counter) }}
+            {% else %}-{% endif %}
+          </td>
+          <td>{{ "Ja" if h.accepted else "Nein" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+
+{% if error %}
+  <p style="color:#b91c1c;"><strong>Fehler:</strong> {{ error }}</p>
+{% endif %}
+"""
+
+THINK_BODY = """
+<h1>Die Verkäuferseite überlegt<span class="pulse">&hellip;</span></h1>
+<p class="muted">Bitte einen Moment Geduld.</p>
+<script>
+  setTimeout(function(){ window.location.href = {{ next_url|tojson }}; }, {{ delay_ms }});
+</script>
+"""
+DECISION_BODY = """
+<h1>Letzte Runde der Verhandlung erreicht.</h1>
+<p class=\"muted\">Teilnehmer-ID: {{ state.participant_id }}</p>
+
+
+<div class=\"grid\">
+  <div class=\"card\" style=\"padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);\">
+    <div><strong>Letztes Angebot der Verkäuferseite:</strong> {{ format_eur(last_offer) }}</div>
+  </div>
+  <form method=\"post\" action=\"{{ url_for('finish_accept') }}\">
+    <button>Letztes Angebot annehmen</button>
+  </form>
+  <form method=\"post\" action=\"{{ url_for('finish_no') }}\">
+    <button class=\"ghost\" type=\"submit\">Ohne Einigung beenden</button>
+  </form>
+</div>
+
+
+<h2>Verlauf</h2>
+<table>
+<thead>
+<tr><th>Runde</th><th>Angebot Verkäuferseite</th><th>Gegenangebot</th><th>Angenommen?</th></tr>
+</thead>
+<tbody>
+{% for h in state.history %}
+<tr>
+<td>{{ h.runde }}</td>
+<td>{{ format_eur(h.algo_offer) }}</td>
+<td>
+{% if h.proband_counter is not none %}
+{{ format_eur(h.proband_counter) }}
+{% else %}-{% endif %}
+</td>
+<td>{{ \"Ja\" if h.accepted else \"Nein\" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+"""
+
+FINISH_BODY = """
+<h1>Verhandlung abgeschlossen</h1>
+<p class="muted">Teilnehmer-ID: {{ state.participant_id }}</p>
+
+<div class="grid">
+  <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
+    <div><strong>Ergebnis:</strong>
+      {% if accepted %}
+        Die Annahme erfolgte in Runde {{ last_round }}. Letztes Angebot der Verkäuferseite: {{ format_eur(last_offer) }}.
+      {% else %}
+        Maximale Rundenzahl erreicht. Letztes Angebot der Verkäuferseite: {{ format_eur(last_offer) }}.
+      {% endif %}
+    </div>
+  </div>
+  <form method="get" action="{{ url_for('vignette') }}">
+    <button>Neue Verhandlung starten</button>
+  </form>
+</div>
+
+<h2>Verlauf</h2>
+<table>
+  <thead>
+    <tr><th>Runde</th><th>Angebot Verkäuferseite</th><th>Gegenangebot</th><th>Angenommen?</th></tr>
+  </thead>
+  <tbody>
+    {% for h in state.history %}
+      <tr>
+        <td>{{ h.runde }}</td>
+        <td>{{ format_eur(h.algo_offer) }}</td>
+        <td>
+          {% if h.proband_counter is not none %}
+            {{ format_eur(h.proband_counter) }}
+          {% else %}-{% endif %}
+        </td>
+        <td>{{ "Ja" if h.accepted else "Nein" }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+"""
+
+# -------------- Routen --------------
+
+@app.errorhandler(404)
+def on_404(e):
+    body = """
+    <h1>Seite nicht gefunden</h1>
+    <p class="muted">Die angeforderte URL existiert nicht. Nutze einen der folgenden Links:</p>
+    <ul>
+      <li><a href="/">Startseite</a></li>
+      <li><a href="/vignette">Vignette</a></li>
+      <li><a href="/negotiate">Verhandlung</a></li>
+    </ul>
+    <p class="muted">Wenn du im Notebook arbeitest, klicke am besten auf den Link, der in der Ausgabe unter <em>Server läuft</em> angezeigt wird.</p>
+    """
+    return render_page(body), 404
+
+@app.route("/favicon.ico")
+def favicon():
+    # Kein 404 im Log für Browser-Favicon-Anfrage
+    return ("", 204)
+
+@app.route("/_routes")
+def list_routes():
+    try:
+        rules = sorted([str(r) for r in app.url_map.iter_rules()])
+    except Exception:
+        rules = []
+    return jsonify({"routes": rules})
+
+@app.route("/", methods=["GET"])
+def home():
+    # Landing-Seite mit QR-Code → führt zur Vignette
+    # Fix: bevorzuge PUBLIC_BASE_URL (z.B. ngrok), sonst absolute _external-URL
+    if os.getenv("PUBLIC_BASE_URL"):
+        start_url = os.getenv("PUBLIC_BASE_URL").rstrip("/") + url_for("vignette")
+    else:
+        start_url = url_for("vignette", _external=True)
+    return render_page(HOME_BODY, max_runden=MAX_RUNDEN, start_url=start_url)
+
+
+@app.route("/vignette", methods=["GET"], strict_slashes=False)
+def vignette():
+    err = session.pop("consent_error", None)
+    return render_page(VIGNETTE_BODY, max_runden=MAX_RUNDEN, error=err)
+
+
+@app.route("/start", methods=["POST"])
+def start():
+    # Serverseitige Pflicht: Consent muss gesetzt sein
+    consent = request.form.get("consent")
+    if consent not in ("on", "true", "1", "yes"):  # Checkbox sendet i.d.R. "on"
+        session["consent_error"] = "Bitte stimmen Sie der Datennutzung zu, um die Verhandlung zu starten."
+        return redirect(url_for("vignette"))
+
+    # Startet eine neue Verhandlung / setzt Zustand zurück
+    state = init_state()
+    session.modified = True
+    return redirect(url_for("negotiate"))
+
+
+@app.route("/negotiate", methods=["GET"])
+def negotiate():
+    state = get_state()
+    # Wenn Runde bereits > MAX_RUNDEN (z. B. via Reload), beenden
+    if state["runde"] > MAX_RUNDEN:
+        if any(h["accepted"] for h in state["history"]):
+            return redirect(url_for("finish"))
+        return redirect(url_for("decision"))
+    return render_page(NEGOTIATE_BODY, state=state, max_runden=MAX_RUNDEN, error=None)
+
+
+@app.route("/offer", methods=["POST"])
+def offer():
+    state = get_state()
+    if state["runde"] > MAX_RUNDEN:
+        if any(h.get("accepted") for h in state["history"]):
+            return redirect(url_for("finish"))
+        return redirect(url_for("decision"))
+    raw = request.form.get("counter")
+    if raw is not None:
+        raw = raw.replace(",", ".")  # Dezimal-Komma zulassen
+    try:
+        counter = float(raw)
+        if counter < 0:
+            raise ValueError("negativ")
+    except Exception:
+        # Zurück mit Fehlermeldung
+        return render_page(NEGOTIATE_BODY, state=state, max_runden=MAX_RUNDEN, error="Bitte eine gültige Zahl ≥ 0 eingeben.")
+
+    # --- Auto-Akzeptanz prüfen (in derselben Runde) ---
+    if should_auto_accept(state.get("initial_offer", state["max_price"]), state["min_price"], counter):
+        append_row_to_excel([
+            now_iso(), state["participant_id"], state["runde"],
+            state["current_offer"], counter, True, True
+        ])
+        # NEU: Tages-Sheet aktualisieren
+        upsert_counter_to_datesheet(state["participant_id"], state["runde"], counter)
+
+        state["history"].append({
+            "runde": state["runde"],
+            "algo_offer": round(state["current_offer"], 2),
+            "proband_counter": round(counter, 2),
+            "accepted": True
+        })
+        state["runde"] = MAX_RUNDEN + 1  # beendet
+        session["state"] = state
+        session.modified = True
+        # kurze Denkpause, dann direkt Abschluss mit Einigung
+        delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)  
+        return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('finish'))
+     
+    # --- sonst normaler Rundenfortschritt ---
+    append_row_to_excel([
+        now_iso(), state["participant_id"], state["runde"],
+        state["current_offer"], counter, False, False
+    ])
+    # NEU: Tages-Sheet aktualisieren
+    upsert_counter_to_datesheet(state["participant_id"], state["runde"], counter)
+
+    state["history"].append({
+        "runde": state["runde"],
+        "algo_offer": round(state["current_offer"], 2),
+        "proband_counter": round(counter, 2),
+        "accepted": False
+    })
+
+    next_offer = compute_next_offer(
+        prev_offer=state["current_offer"],
+        min_price=state["min_price"],
+        proband_counter=counter,
+        runde=state["runde"],
+        last_concession=state.get("last_concession")
+    )
+    state["runde"] += 1
+    try:
+        state["last_concession"] = round(float(state["current_offer"]) - float(next_offer), 2)
+    except Exception:
+        state["last_concession"] = float(state["current_offer"]) - float(next_offer)
+    state["current_offer"] = next_offer
+
+    session["state"] = state
+    session.modified = True
+
+    if state["runde"] > MAX_RUNDEN:
+        delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)
+        return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('decision'))
+
+    # Denk-Pause zeigen, dann zur nächsten Runde
+    delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)
+    return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('negotiate'))
+
+
+@app.route("/accept", methods=["POST"])
+def accept():
+    state = get_state()
+    # Protokollieren in Excel (accepted=True)
+    append_row_to_excel([
+        now_iso(), state["participant_id"], state["runde"],
+        state["current_offer"], None, True, True
+    ])
+
+    state["history"].append({
+        "runde": state["runde"],
+        "algo_offer": round(state["current_offer"], 2),
+        "proband_counter": None,
+        "accepted": True
+    })
+
+    # Beenden
+    state["runde"] = MAX_RUNDEN + 1  # markiere als beendet
+    session["state"] = state
+    session.modified = True
+
+    # Denk-Pause, dann Finish
+    delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)
+    return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('finish'))
+
+
+@app.route("/finish", methods=["GET"])
+def finish():
+    state = get_state()
+    # Falls jemand direkt /finish aufruft ohne Ende, schützen
+    if state["runde"] <= MAX_RUNDEN:
+        return redirect(url_for("negotiate"))
+
+    accepted = any(h["accepted"] for h in state["history"])
+    last_offer = state["history"][-1]["algo_offer"] if state["history"] else None
+    last_round = state["history"][-1]["runde"] if state["history"] else None
+    return render_page(FINISH_BODY, state=state, accepted=accepted, last_offer=last_offer, last_round=last_round)
+
+
+@app.route("/qr")
+def qr():
+    """
+    Gibt einen QR-Code (PNG) aus, der die angegebene URL (Query-Param 'u') encodiert.
+    Fallback: Vignette-URL.
+    """
+    url = request.args.get("u")
+    if not url:
+        # Fix: wenn kein u übergeben, absolute URL bevorzugen (bzw. PUBLIC_BASE_URL nutzen)
+        if os.getenv("PUBLIC_BASE_URL"):
+            url = os.getenv("PUBLIC_BASE_URL").rstrip("/") + url_for("vignette")
+        else:
+            url = url_for("vignette", _external=True)
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    resp = make_response(buf.read())
+    resp.headers.set("Content-Type", "image/png")
+    resp.headers.set("Cache-Control", "no-store")
+    return resp
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "time": now_iso()})
+
+# -------------- Entscheidungs-Routen (nach maximalen Runden) --------------
+
+
+@app.route("/decision", methods=["GET"])
+def decision():
+    state = get_state()
+    if state["runde"] <= MAX_RUNDEN:
+        return redirect(url_for("negotiate"))
+    if any(h["accepted"] for h in state["history"]):
+        return redirect(url_for("finish"))
+    last_offer = state["history"][-1]["algo_offer"] if state["history"] else state["current_offer"]
+    return render_page(DECISION_BODY, state=state, last_offer=last_offer)
+
+
+@app.route("/finish_accept", methods=["POST"])
+def finish_accept():
+    state = get_state()
+    append_row_to_excel([
+        now_iso(), state["participant_id"], MAX_RUNDEN,
+        state["current_offer"], None, True, True
+    ])
+    state["history"].append({
+        "runde": MAX_RUNDEN,
+        "algo_offer": round(state["current_offer"], 2),
+        "proband_counter": None,
+        "accepted": True
+    })
+    session["state"] = state
+    session.modified = True
+    delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)
+    return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('finish'))
+
+
+@app.route("/finish_no", methods=["POST"])
+def finish_no():
+    state = get_state()
+    append_row_to_excel([
+        now_iso(), state["participant_id"], MAX_RUNDEN,
+        state["current_offer"], None, False, True
+    ])
+    session["state"] = state
+    session.modified = True
+    delay_ms = random.randint(THINK_DELAY_MS_MIN, THINK_DELAY_MS_MAX)
+    return render_page(THINK_BODY, delay_ms=delay_ms, next_url=url_for('finish'))
+
+
+# -------------- Server-Start (robust + Notebook-Unterstützung) --------------
+
+def _find_free_port(start_port):
+    """Sucht ab start_port einen freien Port (max. +20)."""
+    for p in range(start_port, start_port + 21):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return start_port
+
+
+def run_server(host, port, debug):
+    """Startet zuerst Flask/Werkzeug **ohne** Threading & ReLoader. Fällt bei Fehlern auf wsgiref zurück.
+    Hält nach Möglichkeit denselben Port, damit der Notebook-Link passt.
+    """
+    try:
+        # Wichtig: threaded=False verhindert ThreadedWSGIServer → vermeidet SystemExit:1 in restriktiven Umgebungen
+        app.run(host=host, port=port, debug=debug, use_reloader=False, threaded=False)
+        return
+    except SystemExit as e:
+        print(f"⚠️ Werkzeug hat mit SystemExit({getattr(e, 'code', 1)}) beendet – Fallback auf wsgiref.")
+    except Exception as e:
+        print(f"⚠️ Fehler beim Start mit Werkzeug: {e} – Fallback auf wsgiref.")
+
+    # Fallback: stdlib-Server (Single-Thread)
+    try:
+        from wsgiref.simple_server import make_server
+        bind_host = host
+        bind_port = port
+        # wsgiref bindet stabil auf 127.0.0.1; bei 0.0.0.0 auf localhost wechseln, Port möglichst gleich lassen
+        if bind_host in ("0.0.0.0", "::"):
+            bind_host = "127.0.0.1"
+        try:
+            httpd = make_server(bind_host, bind_port, app)
+        except OSError:
+            # Wenn Port doch belegt ist, versuche denselben Host mit freiem Port in der Nähe
+            bind_port = _find_free_port(bind_port)
+            httpd = make_server(bind_host, bind_port, app)
+        print(f"✅ wsgiref läuft unter http://{bind_host}:{bind_port} (Single-Thread, kein Debug)")
+        httpd.serve_forever()
+    except Exception as e:
+        print(f"❌ Fallback-Server fehlgeschlagen: {e}")
+
+def maybe_start_tunnel(port):
+    """Startet einen ngrok-Tunnel, wenn ENABLE_TUNNEL=1 gesetzt und pyngrok verfügbar ist.
+    Bei Windows Defender Block (WinError 225) wird das Tunneln automatisch deaktiviert.
+    """
+    if os.getenv("ENABLE_TUNNEL") not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        from pyngrok import ngrok  # type: ignore
+        token = os.getenv("NGROK_AUTHTOKEN")
+        if token:
+            ngrok.set_auth_token(token)
+        tunnel = ngrok.connect(addr=port, proto="http", bind_tls=True)
+        return tunnel.public_url
+    except Exception as e:
+        print(f"⚠️ Konnte Tunnel nicht starten: {e}")
+        # Deaktivieren, damit nicht erneut versucht wird
+        os.environ["ENABLE_TUNNEL"] = "0"
+        return None
+
+
+def notebook_show_links(local_host, port, public_url, auto_open=False):
+    """Zeigt in Notebook klickbare Links + QR an und (optional) öffnet lokal den Browser (Vignette)."""
+    try:
+        from IPython.display import display, HTML  # type: ignore
+    except Exception:
+        return
+
+    vignette_local = f"http://{local_host}:{port}/vignette"
+    html = [
+        f"<h3>Server läuft</h3>",
+        f"<p>Vignette (lokal): <a href='{vignette_local}' target='_blank'>{vignette_local}</a></p>"
+    ]
+    if public_url:
+        start_url = public_url.rstrip('/') + '/vignette'
+        html.append(f"<p><strong>Öffentlicher Link (Handy):</strong> <a href='{start_url}' target='_blank'>{start_url}</a></p>")
+        # QR für öffentlichen Link einbetten
+        try:
+            img = qrcode.make(start_url)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            html.append(f"<img alt='QR' style='width:160px;border:1px solid #e5e7eb;border-radius:8px;' src='data:image/png;base64,{b64}'/>")
+        except Exception:
+            pass
+    display(HTML("".join(html)))
+
+    if auto_open:
+        # Lokal Browser öffnen (blockt Notebook nicht)
+        try:
+            webbrowser.open(vignette_local)
+        except Exception:
+            pass
+
+
+# -------------- Readiness / Tests --------------
+
+def wait_until_ready(urls, timeout_s=30.0):
+    """Wartet bis einer der /healthz-URLs 200 liefert und gibt die erste funktionierende zurück.
+    Nutzt einen Proxy-losen Opener, damit Unternehmens-Proxies 127.0.0.1 nicht stören.
+    """
+    import urllib.request
+    import urllib.error
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.time() + timeout_s
+    urls = list(urls)
+    while time.time() < deadline:
+        for u in urls:
+            try:
+                req = urllib.request.Request(u, headers={"Connection": "close"})
+                with opener.open(req, timeout=3) as resp:
+                    if getattr(resp, "status", 200) == 200:
+                        return u
+            except Exception:
+                pass
+        time.sleep(0.4)
+    return None
+
+# -------------- Tests --------------
+
+def _set_test_excel_path(tmp_path: str) -> None:
+    """Hilfsfunktion für Tests: Excel-Datei/Lock auf temporären Pfad setzen."""
+    global EXCEL_PATH, LOCK_PATH
+    EXCEL_PATH = tmp_path
+    LOCK_PATH = EXCEL_PATH + ".lock"
+
+
+def run_tests():
+    import unittest
+    import tempfile
+    import shutil
+
+    class NegotiationAppTests(unittest.TestCase):
+        def setUp(self):
+            # Temporäre Excel-Datei nutzen
+            self.tmpdir = tempfile.mkdtemp(prefix="negotest_")
+            self.xlsx = os.path.join(self.tmpdir, "test.xlsx")
+            _set_test_excel_path(self.xlsx)
+            self.client = app.test_client()
+
+        def tearDown(self):
+            try:
+                shutil.rmtree(self.tmpdir)
+            except Exception:
+                pass
+
+        def test_home_page_200_and_qr(self):
+            r = self.client.get("/")
+            self.assertEqual(r.status_code, 200)
+            # Neuer Titel/Heading gemäß Anforderung (keine "Simulation" erwähnen)
+            self.assertIn("Verkaufsmesse", r.get_data(as_text=True))
+            self.assertIn("QR-Code", r.get_data(as_text=True))
+
+        def test_start_sets_state(self):
+            r = self.client.post("/start", follow_redirects=False)
+            self.assertEqual(r.status_code, 302)
+            # Session prüfen
+            with self.client.session_transaction() as sess:
+                st = sess.get("state")
+                self.assertIsNotNone(st)
+                self.assertEqual(st["runde"], 1)
+                self.assertEqual(st["current_offer"], st["max_price"])  # Startangebot = max_price
+
+        def test_offer_flow_appends_excel(self):
+            self.client.post("/start")
+            r = self.client.post("/offer", data={"counter": "5000.0"}, follow_redirects=False)
+            # Denk-Pause-Seite → 200 OK
+            self.assertEqual(r.status_code, 200)
+            ensure_workbook(EXCEL_PATH)
+            wb = load_workbook(EXCEL_PATH)
+            ws = wb.active
+            self.assertGreaterEqual(ws.max_row, 2)
+
+        def test_invalid_counter_message(self):
+            self.client.post("/start")
+            r = self.client.post("/offer", data={"counter": "-5"}, follow_redirects=True)
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("Bitte eine gültige Zahl ", r.get_data(as_text=True))
+
+        def test_accept_finishes(self):
+            self.client.post("/start")
+            r = self.client.post("/accept", follow_redirects=False)
+            # Denk-Pause-Seite → 200 OK, danach /finish
+            self.assertEqual(r.status_code, 200)
+            r2 = self.client.get("/finish")
+            self.assertEqual(r2.status_code, 200)
+            self.assertIn("Verhandlung abgeschlossen", r2.get_data(as_text=True))
+
+        def test_max_rounds_finish(self):
+            self.client.post("/start")
+            for _ in range(6):
+                self.client.post("/offer", data={"counter": "4500"})
+            r = self.client.get("/finish")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("Verhandlung abgeschlossen", r.get_data(as_text=True))
+
+        # --- Neue Tests: Vignette & Anzeige ---
+        def test_vignette_page(self):
+            r = self.client.get("/vignette")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("Designer-Verkaufsmesse", r.get_data(as_text=True))
+
+        def test_euro_display(self):
+            self.client.post("/start")
+            r = self.client.get("/negotiate")
+            html = r.get_data(as_text=True)
+            self.assertIn("5.500,00 €", html)  # Neues Erstangebot sichtbar
+            self.assertIn("Dein Gegenangebot in €", html)
+
+        def test_comma_decimal_input(self):
+            self.client.post("/start")
+            r = self.client.post("/offer", data={"counter": "5.050,50"}, follow_redirects=False)
+            self.assertEqual(r.status_code, 200)  # Denk-Pause-Seite
+
+        def test_hard_strategy_small_concession_initially(self):
+            self.client.post("/start")
+            # Gegenangebot = 0 → harter Algo sollte nur wenig nachgeben (>= 5.200 € bleiben)
+            self.client.post("/offer", data={"counter": "0"}, follow_redirects=False)
+            with self.client.session_transaction() as sess:
+                st = sess.get("state")
+                self.assertIsNotNone(st)
+                self.assertGreaterEqual(st["current_offer"], 5200.0)
+
+        # --- Auto-Akzeptanz ---
+        def test_algo_auto_accepts_threshold(self):
+            self.client.post("/start")
+            # Default ACCEPT_MARGIN = 12 %, Erstangebot = 5.500 → Schwelle = 4.840
+            self.client.post("/offer", data={"counter": "5000"}, follow_redirects=False)
+            r = self.client.get("/finish")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("angenommen", r.get_data(as_text=True))
+            wb = load_workbook(EXCEL_PATH)
+            ws = wb.active
+            last = list(ws.iter_rows(values_only=True))[-1]
+            self.assertTrue(bool(last[5]))  # accepted Spalte
+
+        def test_algo_rejects_far_below(self):
+            self.client.post("/start")
+            self.client.post("/offer", data={"counter": "3000"}, follow_redirects=False)
+            with self.client.session_transaction() as sess:
+                st = sess.get("state")
+                self.assertIsNotNone(st)
+                self.assertTrue(st["runde"] <= 2)
+                self.assertFalse(any(h["accepted"] for h in st["history"]))
+
+        def test_auto_accept_exact_threshold(self):
+            self.client.post("/start")
+            # Schwelle exakt
+            self.client.post("/offer", data={"counter": "4840"}, follow_redirects=False)
+            r = self.client.get("/finish")
+            self.assertIn("angenommen", r.get_data(as_text=True))
+
+        def test_home_qr_targets_vignette(self):
+            r = self.client.get("/")
+            html = r.get_data(as_text=True)
+            self.assertIn("/vignette", html)
+
+        class AdditionalRouteTests(unittest.TestCase):
+            def setUp(self):
+                self.client = app.test_client()
+
+            def test_vignette_trailing_slash(self):
+                r = self.client.get("/vignette/")
+                self.assertEqual(r.status_code, 200)
+                self.assertIn("Designer-Verkaufsmesse", r.get_data(as_text=True))
+
+            def test_routes_listing(self):
+                r = self.client.get("/_routes")
+                self.assertEqual(r.status_code, 200)
+                data = r.get_json()
+                self.assertIn("/vignette", ",".join(data.get("routes", [])))
+
+        unittest.main(argv=["python", "-v"], exit=False)
+
+
+# -------------- Main --------------
+
+if __name__ == "__main__":
+    # Tests ausführen?
+    if os.getenv("RUN_TESTS") == "1":
+        run_tests()
+    else:
+        debug_requested = str(os.getenv("FLASK_DEBUG", "0")).lower() in {"1", "true", "yes", "on"}
+        mp_ok = supports_multiprocessing()
+        debug = debug_requested and mp_ok
+        if debug_requested and not mp_ok:
+            print("⚠️ Multiprocessing nicht verfügbar – starte ohne Werkzeug-Debugger/ReLoader.", flush=True)
+
+        if in_notebook():
+            local_host = HOST if HOST not in ("0.0.0.0", "::") else "127.0.0.1"
+            try_port = PORT
+            s = socket.socket()
+            try:
+                s.bind((local_host, try_port))
+            except OSError:
+                try_port = _find_free_port(5000)
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+            t = threading.Thread(target=run_server, args=(HOST, try_port, debug), daemon=True)
+            t.start()
+
+            # Kleiner Puffer, damit Werkzeug wirklich bindet (gegen Race-Conditions)
+            time.sleep(1.2)
+
+            # Optional Tunnel starten
+            public_url = None
+            if os.getenv("ENABLE_TUNNEL") in {"1", "true", "yes", "on"}:
+                public_url = maybe_start_tunnel(try_port)
+                if public_url:
+                    os.environ["PUBLIC_BASE_URL"] = public_url
+
+            # Auf Server-Readiness warten, dann Links anzeigen & öffnen
+            local_health = f"http://{local_host}:{try_port}/healthz"
+            public_health = (public_url.rstrip('/') + '/healthz') if public_url else None
+            ok = wait_until_ready([u for u in [local_health, public_health] if u])
+            if not ok:
+                print("⚠️ Server noch nicht erreichbar. Prüfe Firewall/Port oder erhöhe Timeout.")
+                # Links trotzdem anzeigen
+                notebook_show_links(local_host, try_port, public_url, auto_open=False)
+                # Letzter Versuch: nach kurzer Wartezeit trotzdem öffnen
+                try:
+                    time.sleep(2.0)
+                    webbrowser.open(f"http://{local_host}:{try_port}/vignette")
+                except Exception:
+                    pass
+            else:
+                notebook_show_links(local_host, try_port, public_url, auto_open=False)
+                # Jetzt Browser öffnen
+                try:
+                    webbrowser.open(f"http://{local_host}:{try_port}/vignette")
+                except Exception:
+                    pass
+        else:
+            run_server(HOST, PORT, debug)

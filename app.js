@@ -10,6 +10,8 @@ const CONFIG = {
   MAX_RUNDEN: parseInt(Q.get('r') || '6', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
+  ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700, // neue Regel: sofort annehmen ab 4.700 €
+  ACCEPT_RANGE_MAX: Number(Q.get('armax')) || 4800, // … bis einschließlich 4.800 €
 };
 
 // Abgeleitete Werte
@@ -43,9 +45,17 @@ let state = newState();
 
 // === Verhandlungslogik (Port aus Python, „harte“ Boulware-ähnliche Strategie) ===
 function shouldAutoAccept(initialOffer, minPrice, counter){
+  const c = Number(counter);
+
+  // NEU: feste Annahme-Spanne 4.700–4.800 € (inklusive)
+  if (Number.isFinite(c) && c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) {
+    return true;
+  }
+
+  // Bestehende Logik: Auto-Akzeptanz, wenn über Schwelle (z. B. 12% unter Erstangebot / Mindestpreis)
   const margin = (CONFIG.ACCEPT_MARGIN > 0 && CONFIG.ACCEPT_MARGIN < 0.5) ? CONFIG.ACCEPT_MARGIN : 0.12;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
-  return Number(counter) >= threshold;
+  return c >= threshold;
 }
 
 /** Liefert nächstes Verkäufer-Angebot in Abhängigkeit von Runde & Gegenangebot. */
@@ -230,14 +240,19 @@ function viewNegotiate(errorMsg){
     ${errorMsg ? `<p style="color:#b91c1c;"><strong>Fehler:</strong> ${errorMsg}</p>` : ``}
   `;
 
-  document.getElementById('sendBtn').addEventListener('click', () => {
-    const val = document.getElementById('counter').value.trim().replace(',','.');
-    const num = Number(val);
-    if (!Number.isFinite(num) || num < 0){ viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.'); return; }
+  const inputEl = document.getElementById('counter');
+  const sendBtn = document.getElementById('sendBtn');
 
-    // Auto-Accept?
+  function handleSubmit(){
+    const val = inputEl.value.trim().replace(',','.');
+    const num = Number(val);
+    if (!Number.isFinite(num) || num < 0){
+      viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.');
+      return;
+    }
+
+    // Auto-Accept prüfen (NEU: inkl. 4.700–4.800 €)
     if (shouldAutoAccept(state.initial_offer, state.min_price, num)) {
-      // Abschluss mit Einigung
       state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: num, accepted: true });
       state.accepted = true; state.finished = true;
       logEvent('round', { runde: state.runde, algo_offer: state.current_offer, counter: num, accepted:true });
@@ -249,22 +264,32 @@ function viewNegotiate(errorMsg){
     const next = computeNextOffer(state.current_offer, state.min_price, num, state.runde, state.last_concession);
     const concession = state.current_offer - next;
 
-    // Verlauf & Zustand aktualisieren
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: num, accepted:false });
     state.current_offer = next;
     state.last_concession = concession;
 
     logEvent('round', { runde: state.runde, counter: num, new_offer: next, concession });
 
-    // Rundenfortschritt / Ende?
     if (state.runde >= CONFIG.MAX_RUNDEN) {
       state.finished = true;
-      viewThink(() => viewDecision());   // letzte Entscheidung
+      viewThink(() => viewDecision());
     } else {
       state.runde += 1;
       viewThink(() => viewNegotiate());
     }
+  }
+
+  // Klick auf „Gegenangebot senden“
+  sendBtn.addEventListener('click', handleSubmit);
+
+  // NEU: Enter-Taste im Eingabefeld
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSubmit();
+    }
   });
+
 
   document.getElementById('acceptBtn').addEventListener('click', () => {
     // Proband nimmt aktuelles Angebot an
@@ -332,4 +357,5 @@ function viewFinish(accepted){
 
 // === Startbildschirm =========================================================
 viewVignette();
+
 

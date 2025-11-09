@@ -23,6 +23,9 @@
     .pill{ display:inline-block; padding:6px 10px; border-radius:999px; background:#eef0f3; font-weight:600; }
     button{ appearance:none; border:none; background:var(--btn); color:var(--btn-fg); padding:12px 16px; border-radius:12px; cursor:pointer; font-weight:600; }
     button.ghost{ background:transparent; color:var(--fg); border:1px solid var(--accent); }
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .consent{display:flex;gap:10px;align-items:flex-start;background:#f4f6f8;border:1px solid var(--accent);border-radius:12px;padding:14px}
+    input[type=checkbox]{width:18px;height:18px;margin-top:2px}
     .center{ text-align:center; }
     .pulse{ animation:pulse 1.3s ease-in-out infinite; opacity:.8; }
     @keyframes pulse{ 0%{opacity:.5} 50%{opacity:1} 100%{opacity:.5} }
@@ -52,3 +55,4 @@
   <script type="module" src="./app.js"></script>
 </body>
 </html>
+

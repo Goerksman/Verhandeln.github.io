@@ -1,20 +1,18 @@
 // === Konfiguration (über URL-Parameter überschreibbar) =======================
-// ?i=5500 (Initialangebot), ?mf=0.70 (Mindestpreis-Faktor), ?am=0.12 (Auto-Akzept-Marge),
-// ?r=6 (Max Runden), ?tmin=1200 ?tmax=2800 (Denkpause in ms)
 const Q = new URLSearchParams(location.search);
 const CONFIG = {
   INITIAL_OFFER: Number(Q.get('i')) || 5500,
-  MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined, // fester Mindestpreis
-  MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,               // falls MIN_PRICE nicht gesetzt
-  ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,                  // 12% unterm Erstangebot
+  MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined,
+  MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,
+  ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,
   MAX_RUNDEN: parseInt(Q.get('r') || '6', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
-  ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700, // neue Regel: sofort annehmen ab 4.700 €
-  ACCEPT_RANGE_MAX: Number(Q.get('armax')) || 4800, // … bis einschließlich 4.800 €
+  ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700,
+  ACCEPT_RANGE_MAX: Number(Q.get('armax')) || 4800,
 };
 
-// Abgeleitete Werte
+// Abgeleitet
 CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
   ? CONFIG.MIN_PRICE
   : Math.round(CONFIG.INITIAL_OFFER * CONFIG.MIN_PRICE_FACTOR);
@@ -27,7 +25,7 @@ const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const roundDownInc = (v, inc) => Math.floor(v / inc) * inc;
 
-// === Zustand ================================================================
+// === Zustand =================================================================
 function newState(){
   return {
     participant_id: crypto.randomUUID?.() || ('x_'+Date.now()+Math.random().toString(36).slice(2)),
@@ -36,7 +34,7 @@ function newState(){
     max_price: CONFIG.INITIAL_OFFER,
     initial_offer: CONFIG.INITIAL_OFFER,
     current_offer: CONFIG.INITIAL_OFFER,
-    history: [],                // [{runde, algo_offer, proband_counter, accepted}]
+    history: [],
     last_concession: null,
     finished: false,
     accepted: false
@@ -44,32 +42,23 @@ function newState(){
 }
 let state = newState();
 
-// === Verhandlungslogik (Port aus Python, „harte“ Boulware-ähnliche Strategie) ===
+// === Logik ===================================================================
 function shouldAutoAccept(initialOffer, minPrice, counter){
   const c = Number(counter);
-
-  // NEU: feste Annahme-Spanne 4.700–4.800 € (inklusive)
-  if (Number.isFinite(c) && c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) {
-    return true;
-  }
-
-  // Bestehende Logik: Auto-Akzeptanz, wenn über Schwelle (z. B. 12% unter Erstangebot / Mindestpreis)
+  if (Number.isFinite(c) && c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) return true;
   const margin = (CONFIG.ACCEPT_MARGIN > 0 && CONFIG.ACCEPT_MARGIN < 0.5) ? CONFIG.ACCEPT_MARGIN : 0.12;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
 }
 
-/** Liefert nächstes Verkäufer-Angebot in Abhängigkeit von Runde & Gegenangebot. */
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev = Number(prevOffer);
   const m = Number(minPrice);
   const r = Math.max(1, Math.min(runde, CONFIG.MAX_RUNDEN));
 
-  // Deadline-Druck (später stärker)
   const dp = r / CONFIG.MAX_RUNDEN;
   const deadlinePressure = Math.pow(dp, 4);
 
-  // Falls kein Gegenangebot vorliegt (erste Anzeige in einer Runde)
   if (probandCounter == null) {
     const step = (r <= 3) ? 150 : 100;
     const tentative = Math.max(m, prev - step);
@@ -79,39 +68,29 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
 
   const counter = Number(probandCounter);
   const gap = Math.max(prev - counter, 0);
-  // 12% .. 22% der Lücke je nach Runde
   const beta = 0.12 + 0.10 * deadlinePressure;
   let proposedStep = gap * beta;
 
-  // „Nahe“ vs. „weit“ entferntes Angebot relativ zum aktuellen Preis
   const highOffer = counter >= (prev - 1800);
 
-  // Runden-abhängige Bandbreiten & Rundung
   let minStep, maxStep, inc;
   if (r <= 3) {
-    if (highOffer) {
-      minStep = 180; maxStep = 260;
-    } else {
-      if (r === 1) { minStep = 240; maxStep = 300; }
-      else         { minStep = 200; maxStep = 250; }
-    }
+    if (highOffer) { minStep = 180; maxStep = 260; }
+    else { if (r === 1) { minStep = 240; maxStep = 300; } else { minStep = 200; maxStep = 250; } }
     inc = 50;
   } else {
     if (highOffer) { minStep = 120; maxStep = 260; }
-    else           { minStep = 200; maxStep = 250; }
+    else { minStep = 200; maxStep = 250; }
     inc = 1;
   }
 
-  // Schritt begrenzen + Runden-Kappung
   let step = clamp(proposedStep, minStep, maxStep);
   const cap = (r === 1) ? 300 : 250;
   step = Math.min(step, cap);
 
-  // Angebot vorschlagen
   let tentative = Math.max(m, prev - step);
   if (inc === 50) tentative = roundDownInc(tentative, 50);
 
-  // leichte Glättung vs. letzte Konzession (keine wilden Sprünge)
   if (lastConcession != null) {
     const diff = Math.abs(step - lastConcession);
     if (diff > 80) {
@@ -127,8 +106,6 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   }
 
   let nextOffer = Math.round(tentative * 100) / 100;
-
-  // Monotonie sicherstellen
   if (nextOffer > prev) {
     const fallback = prev - (r <= 3 ? 50 : 10);
     nextOffer = Math.max(m, fallback);
@@ -136,66 +113,45 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   return nextOffer;
 }
 
-// === Rendering der „Screens“ =================================================
+// === Screens =================================================================
 function viewVignette(){
   app.innerHTML = `
     <h1>Designer-Verkaufsmesse</h1>
-
     <p class="muted">Stelle dir folgende Situation vor:</p>
-
-    <p>
-      Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
-      Eine Besucherin bzw. ein Besucher möchte ihre/seine <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
-      Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design.
-      Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne
-      liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
-      verhandelt über den Verkaufspreis.
-    </p>
-
-    <p>
-      Auf der nächsten Seite beginnt die Preisverhandlung mit der <b>Verkäuferseite</b>.
-      Du kannst ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen. Achte darauf, dass die Messe
-      gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in
-      die Verhandlung geht.
-    </p>
-
+    <p>Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
+       Eine Besucherin bzw. ein Besucher möchte ihre/seine <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
+       Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design.
+       Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne
+       liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
+       verhandelt über den Verkaufspreis.</p>
+    <p>Auf der nächsten Seite beginnt die Preisverhandlung mit der <b>Verkäuferseite</b>.
+       Du kannst ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen. Achte darauf, dass die Messe
+       gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in
+       die Verhandlung geht.</p>
     <p class="muted"><b>Hinweis:</b> Die Verhandlung umfasst maximal ${CONFIG.MAX_RUNDEN} Runden.</p>
-
     <div class="grid">
       <label class="consent">
         <input id="consent" type="checkbox" />
         <span>Ich stimme zu, dass meine Eingaben zu <b>forschenden Zwecken</b> gespeichert und anonym ausgewertet werden dürfen.</span>
       </label>
-
-      <div>
-        <button id="startBtn" disabled>Verhandlung starten</button>
-      </div>
-    </div>
-  `;
-
+      <div><button id="startBtn" disabled>Verhandlung starten</button></div>
+    </div>`;
   const consent = document.getElementById('consent');
   const startBtn = document.getElementById('startBtn');
-
-  // Button nur aktiv, wenn Häkchen gesetzt ist
   const sync = () => { startBtn.disabled = !consent.checked; };
-  consent.addEventListener('change', sync);
-  sync();
-
+  consent.addEventListener('change', sync); sync();
   startBtn.addEventListener('click', () => {
-    if (!consent.checked) return; // doppelte Absicherung
+    if (!consent.checked) return;
     state = newState();
-    logEvent('start', { probandCode: window.probandCode, playerId: window.playerId, consent: true });
     viewNegotiate();
   });
 }
-
 
 function viewThink(next){
   const delay = randInt(CONFIG.THINK_DELAY_MS_MIN, CONFIG.THINK_DELAY_MS_MAX);
   app.innerHTML = `
     <h1>Die Verkäuferseite überlegt<span class="pulse">&hellip;</span></h1>
-    <p class="muted">Bitte einen Moment Geduld.</p>
-  `;
+    <p class="muted">Bitte einen Moment Geduld.</p>`;
   setTimeout(next, delay);
 }
 
@@ -213,31 +169,25 @@ function historyTable(){
     <table>
       <thead><tr><th>Runde</th><th>Angebot Verkäuferseite</th><th>Gegenangebot</th><th>Angenommen?</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>
-  `;
+    </table>`;
 }
 
 function viewNegotiate(errorMsg){
   app.innerHTML = `
     <h1>Verkaufsverhandlung</h1>
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
-
     <div class="grid">
       <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
         <div><strong>Aktuelles Angebot der Verkäuferseite:</strong> ${eur(state.current_offer)}</div>
       </div>
-
       <label for="counter">Dein Gegenangebot in €</label>
       <div class="row">
         <input id="counter" type="number" step="0.01" min="0" required />
         <button id="sendBtn">Gegenangebot senden</button>
       </div>
-
       <button id="acceptBtn" class="ghost">Angebot annehmen &amp; Verhandlung beenden</button>
     </div>
-
     ${historyTable()}
-
     ${errorMsg ? `<p style="color:#b91c1c;"><strong>Fehler:</strong> ${errorMsg}</p>` : ``}
   `;
 
@@ -247,17 +197,12 @@ function viewNegotiate(errorMsg){
   function handleSubmit(){
     const val = inputEl.value.trim().replace(',','.');
     const num = Number(val);
-    if (!Number.isFinite(num) || num < 0){
-      viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.');
-      return;
-    }
+    if (!Number.isFinite(num) || num < 0){ viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.'); return; }
 
-    // SOFORT-ANNAHME (deine Regel + bisherige Schwelle)
+    // Auto-Accept?
     if (shouldAutoAccept(state.initial_offer, state.min_price, num)) {
       state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: num, accepted: true });
       state.accepted = true; state.finished = true;
-
-      // → Zeile in "Daten" + Tagesreiter
       sendRow({
         participant_id: state.participant_id,
         runde: state.runde,
@@ -267,17 +212,15 @@ function viewNegotiate(errorMsg){
         finished: true,
         deal_price: num
       });
-
       viewThink(() => viewFinish(true));
       return;
     }
 
-    // Normale Runde (kein sofortiges Annehmen)
+    // Normale Runde
     const prevOffer = state.current_offer;
     const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
     const concession = prevOffer - next;
 
-    // → Zeile in "Daten": eine Zeile pro Runde
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -287,7 +230,6 @@ function viewNegotiate(errorMsg){
       finished: false
     });
 
-    // Zustand aktualisieren
     state.history.push({ runde: state.runde, algo_offer: prevOffer, proband_counter: num, accepted:false });
     state.current_offer = next;
     state.last_concession = concession;
@@ -301,18 +243,14 @@ function viewNegotiate(errorMsg){
     }
   }
 
-  // Button-Klick
+  // Button + Enter
   sendBtn.addEventListener('click', handleSubmit);
-  // ENTER im Eingabefeld
-  inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); }
-  });
+  inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); } });
 
-  // Proband nimmt Verkäufer-Angebot an
+  // Verkäufer-Angebot annehmen
   document.getElementById('acceptBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
-
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -322,38 +260,14 @@ function viewNegotiate(errorMsg){
       finished: true,
       deal_price: state.current_offer
     });
-
-    viewThink(() => viewFinish(true));
-  });
-}
-
-  // Klick auf „Gegenangebot senden“
-  sendBtn.addEventListener('click', handleSubmit);
-
-  // NEU: Enter-Taste im Eingabefeld
-  inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleSubmit();
-    }
-  });
-
-
-  document.getElementById('acceptBtn').addEventListener('click', () => {
-    // Proband nimmt aktuelles Angebot an
-    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
-    state.accepted = true; state.finished = true;
-    logEvent('accept', { runde: state.runde, offer: state.current_offer });
     viewThink(() => viewFinish(true));
   });
 }
 
 function viewDecision(){
-  // Letzte Runde erreicht – Annehmen oder ohne Einigung beenden
   app.innerHTML = `
     <h1>Letzte Runde der Verhandlung erreicht.</h1>
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
-
     <div class="grid">
       <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
         <div><strong>Letztes Angebot der Verkäuferseite:</strong> ${eur(state.current_offer)}</div>
@@ -361,14 +275,11 @@ function viewDecision(){
       <button id="takeBtn">Letztes Angebot annehmen</button>
       <button id="noBtn" class="ghost">Ohne Einigung beenden</button>
     </div>
-
     ${historyTable()}
   `;
-
   document.getElementById('takeBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
-
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -378,14 +289,11 @@ function viewDecision(){
       finished: true,
       deal_price: state.current_offer
     });
-
     viewThink(() => viewFinish(true));
   });
-
   document.getElementById('noBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:false });
     state.accepted = false; state.finished = true;
-
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -394,17 +302,14 @@ function viewDecision(){
       accepted: false,
       finished: true
     });
-
     viewThink(() => viewFinish(false));
   });
 }
-
 
 function viewFinish(accepted){
   app.innerHTML = `
     <h1>Verhandlung abgeschlossen</h1>
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
-
     <div class="grid">
       <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
         <div><strong>Ergebnis:</strong>
@@ -415,18 +320,13 @@ function viewFinish(accepted){
       </div>
       <button id="restartBtn">Neue Verhandlung starten</button>
     </div>
-
     ${historyTable()}
   `;
   document.getElementById('restartBtn').addEventListener('click', () => {
     state = newState();
-    logEvent('restart', { });
     viewVignette();
   });
 }
 
-// === Startbildschirm =========================================================
+// === Start ===================================================================
 viewVignette();
-
-
-

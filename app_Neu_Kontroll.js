@@ -274,10 +274,10 @@ function viewNegotiate(errorMsg){
       // Text für die aktuelle Verwarnung setzen
       if (state.warningCount === 1) {
         state.warningText =
-          'Ihr Angebot liegt unter der Mindestgrenze von 2.250 €. Bitte machen Sie ein realistischeres Angebot. (1. Verwarnung)';
+          'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
       } else {
         state.warningText =
-          'Erneut ein Angebot unter 2.250 €. Die Verhandlung wird daher ohne Einigung beendet. (2. Verwarnung)';
+          'Erneut ein solches Angebot. Die Verhandlung wird daher ohne Einigung beendet.';
       }
 
       // Verkäuferseite macht KEIN Zugeständnis
@@ -449,3 +449,4 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
+

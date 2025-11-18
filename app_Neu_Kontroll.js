@@ -5,12 +5,12 @@ const CONFIG = {
   MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined,
   MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,
   ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,
-  // MAX_RUNDEN jetzt standardmäßig 7 statt 6
+  // Standard jetzt 7 Runden statt 6
   MAX_RUNDEN: parseInt(Q.get('r') || '7', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
   ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700,
-  ACCEPT_RANGE_MAX: Number(Q.get('armax')) || 4800,
+  ACCEPT_RANGE_MAX: Number(Q.get('armax')) || 4800
 };
 
 // Abgeleitet
@@ -54,7 +54,12 @@ function newState(){
     // True, wenn es mind. ein Angebot < 2.250 € vor dem ersten akzeptablen gab
     hasUnacceptable: false,
     // True, sobald es mind. ein Angebot >= 2.250 € gab
-    hasCrossedThreshold: false
+    hasCrossedThreshold: false,
+    // Verwarnungslogik
+    warningCount: 0,
+    warningText: '',
+    // Grund, warum die Verhandlung beendet wurde
+    finish_reason: null
   };
 }
 let state = newState();
@@ -63,7 +68,7 @@ let state = newState();
 
 // Auto-Accept-Regel:
 // - Neu: innerhalb von 5% des aktuellen Angebots (1.5).
-// - Zusätzlich: alte Range-/Margin-Logik (1.5 ergänzt, nicht ersetzt).
+// - Zusätzlich: alte Range-/Margin-Logik.
 function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
   if (!Number.isFinite(c)) return false;
@@ -83,7 +88,7 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   return c >= threshold;
 }
 
-// Neue Angebotslogik gemäß 1.2, 1.3, 1.4 und 2.2
+// Neue Angebotslogik gemäß 1.2–1.4 und 2.2
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev = Number(prevOffer);
   const m = Number(minPrice);
@@ -111,13 +116,13 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   // Wichtig: r bezieht sich auf die aktuelle Verhandlungsrunde,
   // das Ergebnis wird als Angebot in der NÄCHSTEN Runde angezeigt.
 
-  // Runde 2 & 3 (Angebote) -> runde 1 & 2 Eingaben:
+  // Runde 2 & 3 (Angebote) -> Eingaben in Runde 1 & 2:
   // Immer prozentual (2–2,5 %) nach unten.
   if (r === 1 || r === 2) {
     return applyPercentDown();
   }
 
-  // Runde 4 & 5 (Angebote) -> runde 3 & 4 Eingaben:
+  // Runde 4 & 5 (Angebote) -> Eingaben in Runde 3 & 4:
   // Normale Probanden: feste Euro-Schritte 250–310 €.
   // Lowballer (hasUnacceptable): NUR prozentuale Schritte (2–2,5 %), keine großen Sprünge.
   if (r === 3 || r === 4) {
@@ -128,14 +133,13 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
     }
   }
 
-  // Runde 6 & 7 (Angebote) -> runde 5 & 6 Eingaben:
+  // Runde 6 & 7 (Angebote) -> Eingaben in Runde 5 & 6:
   // Wieder prozentual nach oben.
   if (r === 5 || r === 6) {
     return applyPercentUp();
   }
 
-  // In der letzten (7.) Runde wird kein weiteres Gegenangebot mehr berechnet,
-  // das aktuelle Angebot bleibt bestehen.
+  // In der letzten (7.) Runde wird faktisch kein neues Gegenangebot mehr berechnet.
   return prev;
 }
 
@@ -214,7 +218,14 @@ function viewNegotiate(errorMsg){
       <button id="acceptBtn" class="ghost">Angebot annehmen &amp; Verhandlung beenden</button>
     </div>
     ${historyTable()}
-    ${errorMsg ? `<p style="color:#b91c1c;"><strong>Fehler:</strong> ${errorMsg}</p>` : ``}
+    ${state.warningText
+      ? `<p style="color:#b45309;background:#fffbeb;border:1px solid #fbbf24;padding:8px 10px;border-radius:8px;">
+           <strong>Verwarnung:</strong> ${state.warningText}
+         </p>`
+      : ``}
+    ${errorMsg
+      ? `<p style="color:#b91c1c;"><strong>Fehler:</strong> ${errorMsg}</p>`
+      : ``}
   `;
 
   const inputEl = document.getElementById('counter');
@@ -230,11 +241,12 @@ function viewNegotiate(errorMsg){
 
     const prevOffer = state.current_offer;
 
-    // Auto-Accept (inkl. 5%-Regel, 1.5)
+    // Auto-Accept (inkl. 5%-Regel)
     if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
       state.history.push({ runde: state.runde, algo_offer: prevOffer, proband_counter: num, accepted: true });
       state.accepted = true;
       state.finished = true;
+      state.finish_reason = 'accepted';
       sendRow({
         participant_id: state.participant_id,
         runde: state.runde,
@@ -248,33 +260,62 @@ function viewNegotiate(errorMsg){
       return;
     }
 
-    // 2.0 / 2.1: Unakzeptable Angebote (< 2.250 €)
+    // 2.0 / 2.1 + Verwarnungslogik: Unakzeptable Angebote (< 2.250 €)
     if (num < UNACCEPTABLE_LIMIT) {
       // Lowballer merken, solange noch kein akzeptables Angebot kam
       if (!state.hasCrossedThreshold) {
         state.hasUnacceptable = true;
       }
 
+      // Verwarnungszähler erhöhen
+      state.warningCount = (state.warningCount || 0) + 1;
+      const isSecondWarning = state.warningCount >= 2;
+
+      // Text für die aktuelle Verwarnung setzen
+      if (state.warningCount === 1) {
+        state.warningText =
+          'Ihr Angebot liegt unter der Mindestgrenze von 2.250 €. Bitte machen Sie ein realistischeres Angebot. (1. Verwarnung)';
+      } else {
+        state.warningText =
+          'Erneut ein Angebot unter 2.250 €. Die Verhandlung wird daher ohne Einigung beendet. (2. Verwarnung)';
+      }
+
       // Verkäuferseite macht KEIN Zugeständnis
-      sendRow({
+      const rowData = {
         participant_id: state.participant_id,
         runde: state.runde,
         algo_offer: prevOffer,
         proband_counter: num,
         accepted: false,
-        finished: false
-      });
+        finished: isSecondWarning  // bei 2. Verwarnung als beendet markieren
+      };
+      sendRow(rowData);
 
-      state.history.push({ runde: state.runde, algo_offer: prevOffer, proband_counter: num, accepted:false });
+      state.history.push({
+        runde: state.runde,
+        algo_offer: prevOffer,
+        proband_counter: num,
+        accepted: false
+      });
       state.current_offer = prevOffer;
       state.last_concession = 0;
 
-      if (state.runde >= CONFIG.MAX_RUNDEN) {
+      if (isSecondWarning) {
+        // Verhandlung abbrechen
         state.finished = true;
-        viewThink(() => viewDecision());
+        state.accepted = false;
+        state.finish_reason = 'warnings';
+        viewThink(() => viewFinish(false));
       } else {
-        state.runde += 1;
-        viewThink(() => viewNegotiate());
+        // Nach der ersten Verwarnung ganz normal in die nächste Runde / ggf. Max-Runden-Ende
+        if (state.runde >= CONFIG.MAX_RUNDEN) {
+          state.finished = true;
+          state.finish_reason = 'max_rounds';
+          viewThink(() => viewDecision());
+        } else {
+          state.runde += 1;
+          viewThink(() => viewNegotiate());
+        }
       }
       return;
     }
@@ -284,6 +325,9 @@ function viewNegotiate(errorMsg){
     if (!state.hasCrossedThreshold) {
       state.hasCrossedThreshold = true;
     }
+
+    // vorhandene Verwarnungstexte zurücksetzen
+    state.warningText = '';
 
     // Normale Runde mit neuer Strategie
     const prev = state.current_offer;
@@ -305,6 +349,7 @@ function viewNegotiate(errorMsg){
 
     if (state.runde >= CONFIG.MAX_RUNDEN) {
       state.finished = true;
+      state.finish_reason = 'max_rounds';
       viewThink(() => viewDecision());
     } else {
       state.runde += 1;
@@ -320,6 +365,7 @@ function viewNegotiate(errorMsg){
   document.getElementById('acceptBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
+    state.finish_reason = 'accepted';
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -349,6 +395,7 @@ function viewDecision(){
   document.getElementById('takeBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
+    state.finish_reason = 'accepted';
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -363,6 +410,7 @@ function viewDecision(){
   document.getElementById('noBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:false });
     state.accepted = false; state.finished = true;
+    state.finish_reason = 'max_rounds';
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -384,7 +432,9 @@ function viewFinish(accepted){
         <div><strong>Ergebnis:</strong>
           ${accepted
             ? `Annahme in Runde ${state.runde}. Letztes Angebot der Verkäuferseite: ${eur(state.current_offer)}.`
-            : `Maximale Rundenzahl erreicht. Letztes Angebot der Verkäuferseite: ${eur(state.current_offer)}.`}
+            : (state.finish_reason === 'warnings'
+                ? `Verhandlung aufgrund wiederholt unakzeptabler Angebote abgebrochen. Letztes Angebot der Verkäuferseite: ${eur(state.current_offer)}.`
+                : `Maximale Rundenzahl erreicht. Letztes Angebot der Verkäuferseite: ${eur(state.current_offer)}.`)}
         </div>
       </div>
       <button id="restartBtn">Neue Verhandlung starten</button>

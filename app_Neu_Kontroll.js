@@ -23,8 +23,12 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
 // Grenzwert für "unakzeptable" Angebote
 const UNACCEPTABLE_LIMIT = 2250;
 
-// Prozentschritte für rundenweise Anpassung (2%, 2.1%, ... 2.5%)
-const PERCENT_STEPS = [0.02, 0.021, 0.022, 0.023, 0.024, 0.025];
+// Prozentschritte für rundenweise Anpassung
+// ERWEITERT: 2,0 % bis 3,0 % in 0,1 %-Schritten => 11 Werte
+const PERCENT_STEPS = [
+  0.02, 0.021, 0.022, 0.023, 0.024, 0.025,
+  0.026, 0.027, 0.028, 0.029, 0.03
+];
 
 // Feste Euro-Schritte für Runden 4 & 5 (bei "normalen" Probanden)
 // ERWEITERT wie gewünscht bis 420:
@@ -132,14 +136,14 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   // das Ergebnis wird als Angebot in der NÄCHSTEN Runde angezeigt.
 
   // Runde 2 & 3 (Angebote) -> Eingaben in Runde 1 & 2:
-  // Immer prozentual (2–2,5 %) nach unten.
+  // Immer prozentual nach unten.
   if (r === 1 || r === 2) {
     return applyPercentDown();
   }
 
   // Runde 4 & 5 (Angebote) -> Eingaben in Runde 3 & 4:
   // Normale Probanden: feste Euro-Schritte 250–420 €.
-  // Lowballer (hasUnacceptable): NUR prozentuale Schritte (2–2,5 %), keine großen Sprünge.
+  // Lowballer (hasUnacceptable): NUR prozentuale Schritte, keine großen Sprünge.
   if (r === 3 || r === 4) {
     if (state.hasUnacceptable) {
       return applyPercentDown();

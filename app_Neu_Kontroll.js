@@ -5,8 +5,8 @@ const CONFIG = {
   MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined,
   MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,
   ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,
-  // Standard jetzt 7 Runden statt 6
-  MAX_RUNDEN: parseInt(Q.get('r') || '7', 10),
+  // Standard jetzt 8 Runden statt 7
+  MAX_RUNDEN: parseInt(Q.get('r') || '8', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
   ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700,
@@ -24,14 +24,13 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
 const UNACCEPTABLE_LIMIT = 2250;
 
 // Prozentschritte für rundenweise Anpassung
-// ERWEITERT: 2,0 % bis 3,0 % in 0,1 %-Schritten => 11 Werte
+// 2,0 % bis 3,0 % in 0,1 %-Schritten
 const PERCENT_STEPS = [
   0.02, 0.021, 0.022, 0.023, 0.024, 0.025,
   0.026, 0.027, 0.028, 0.029, 0.03
 ];
 
-// Feste Euro-Schritte für Runden 4 & 5 (bei "normalen" Probanden)
-// ERWEITERT wie gewünscht bis 420:
+// Feste Euro-Schritte für Runden 4–6 (bei "normalen" Probanden)
 const EURO_STEPS = [
   250, 260, 270, 280, 290, 300, 310,
   320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420
@@ -43,11 +42,12 @@ const sendRow = (row) => (window.sendRow ? window.sendRow(row) : console.log('[s
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
-const roundDownInc = (v, inc) => Math.floor(v / inc) * inc; // aktuell nicht mehr genutzt, kann aber bleiben
+const roundDownInc = (v, inc) => Math.floor(v / inc) * inc; // kann bleiben, wird aktuell nicht genutzt
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
 
-// NEU: Rundung auf die nächste 50er-Stufe (z.B. 4.689,65 -> 4.700; 4.674,99 -> 4.650)
-const roundToNearest50 = (v) => Math.round(v / 50) * 50;
+// NEU: Rundung auf die nächste 25er-Stufe
+// z.B. 4712,49 -> 4700; 4712,50 -> 4725
+const roundToNearest25 = (v) => Math.round(v / 25) * 25;
 
 // === Zustand =================================================================
 function newState(){
@@ -84,32 +84,35 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
   if (!Number.isFinite(c)) return false;
 
-  // 1.5: innerhalb von maximal 5 % vom vorherigen Algorithmus-Angebot
+  // innerhalb von maximal 5 % vom vorherigen Algorithmus-Angebot
   const diff = Math.abs(prevOffer - c);
   if (diff <= prevOffer * 0.05) {
     return true;
   }
 
-  // Alte "Range"-Regel (z.B. 4.700–4.800 €)
+  // Range-Regel (z.B. 4.700–4.800 €)
   if (c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) return true;
 
-  // Alte "Margin"-Regel (z.B. 12 % unter dem Initialangebot, aber nicht unter MIN_PRICE)
+  // Margin-Regel (z.B. 12 % unter dem Initialangebot, aber nicht unter MIN_PRICE)
   const margin = (CONFIG.ACCEPT_MARGIN > 0 && CONFIG.ACCEPT_MARGIN < 0.5) ? CONFIG.ACCEPT_MARGIN : 0.12;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
 }
 
-// Neue Angebotslogik gemäß 1.2–1.4 und 2.2
+// Angebotslogik mit 8 Runden:
+// Runden 1–3: Prozentual nach unten
+// Runden 4–6: Euro-Schritte nach unten (oder Prozent bei Lowballern)
+// Runden 7–8: Prozentual nach oben
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev = Number(prevOffer);
   const m = Number(minPrice);
   const r = Number(runde);
 
-  // HILFSFUNKTIONEN MIT 50er-RUNDUNG
+  // Hilfsfunktionen MIT 25er-RUNDUNG
   const applyPercentDown = () => {
     const p = randomChoice(PERCENT_STEPS);
     const raw = prev * (1 - p);
-    let rounded = roundToNearest50(raw);
+    let rounded = roundToNearest25(raw);
     // nicht unter min_price und nicht über das vorherige Angebot
     const bounded = Math.max(m, Math.min(rounded, prev));
     return bounded;
@@ -118,7 +121,7 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   const applyEuroDown = () => {
     const step = randomChoice(EURO_STEPS);
     const raw = prev - step;
-    let rounded = roundToNearest50(raw);
+    let rounded = roundToNearest25(raw);
     const bounded = Math.max(m, Math.min(rounded, prev));
     return bounded;
   };
@@ -126,7 +129,7 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   const applyPercentUp = () => {
     const p = randomChoice(PERCENT_STEPS);
     const raw = prev * (1 + p);
-    let rounded = roundToNearest50(raw);
+    let rounded = roundToNearest25(raw);
     // nicht unter prev und nicht über Initialangebot
     const bounded = Math.min(state.initial_offer, Math.max(rounded, prev));
     return bounded;
@@ -135,16 +138,15 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   // Wichtig: r bezieht sich auf die aktuelle Verhandlungsrunde,
   // das Ergebnis wird als Angebot in der NÄCHSTEN Runde angezeigt.
 
-  // Runde 2 & 3 (Angebote) -> Eingaben in Runde 1 & 2:
-  // Immer prozentual nach unten.
-  if (r === 1 || r === 2) {
+  // Runden 1–3: immer prozentual nach unten
+  if (r === 1 || r === 2 || r === 3) {
     return applyPercentDown();
   }
 
-  // Runde 4 & 5 (Angebote) -> Eingaben in Runde 3 & 4:
-  // Normale Probanden: feste Euro-Schritte 250–420 €.
-  // Lowballer (hasUnacceptable): NUR prozentuale Schritte, keine großen Sprünge.
-  if (r === 3 || r === 4) {
+  // Runden 4–6:
+  // Normale Probanden: feste Euro-Schritte 250–420 € nach unten
+  // Lowballer (hasUnacceptable): NUR prozentuale Schritte (kein großer Sprung)
+  if (r === 4 || r === 5 || r === 6) {
     if (state.hasUnacceptable) {
       return applyPercentDown();
     } else {
@@ -152,13 +154,12 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
     }
   }
 
-  // Runde 6 & 7 (Angebote) -> Eingaben in Runde 5 & 6:
-  // Wieder prozentual nach oben.
-  if (r === 5 || r === 6) {
+  // Runden 7–8: prozentual nach oben
+  if (r === 7 || r === 8) {
     return applyPercentUp();
   }
 
-  // In der letzten (7.) Runde wird faktisch kein neues Gegenangebot mehr berechnet.
+  // Fallback (sollte praktisch nicht vorkommen)
   return prev;
 }
 
@@ -279,7 +280,7 @@ function viewNegotiate(errorMsg){
       return;
     }
 
-    // 2.0 / 2.1 + Verwarnungslogik: Unakzeptable Angebote (< 2.250 €)
+    // Unakzeptable Angebote (< 2.250 €) + Verwarnungslogik
     if (num < UNACCEPTABLE_LIMIT) {
       // Lowballer merken, solange noch kein akzeptables Angebot kam
       if (!state.hasCrossedThreshold) {
@@ -290,7 +291,7 @@ function viewNegotiate(errorMsg){
       state.warningCount = (state.warningCount || 0) + 1;
       const isSecondWarning = state.warningCount >= 2;
 
-      // Text für die aktuelle Verwarnung setzen (dein gewünschter Text)
+      // Text für die aktuelle Verwarnung setzen
       state.warningText =
         'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
 

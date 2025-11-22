@@ -27,7 +27,11 @@ const UNACCEPTABLE_LIMIT = 2250;
 const PERCENT_STEPS = [0.02, 0.021, 0.022, 0.023, 0.024, 0.025];
 
 // Feste Euro-Schritte für Runden 4 & 5 (bei "normalen" Probanden)
-const EURO_STEPS = [250, 260, 270, 280, 290, 300, 310];
+// ERWEITERT wie gewünscht bis 420:
+const EURO_STEPS = [
+  250, 260, 270, 280, 290, 300, 310,
+  320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420
+];
 
 // === Hilfsfunktionen =========================================================
 const app = document.getElementById('app');
@@ -35,8 +39,11 @@ const sendRow = (row) => (window.sendRow ? window.sendRow(row) : console.log('[s
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
-const roundDownInc = (v, inc) => Math.floor(v / inc) * inc;
+const roundDownInc = (v, inc) => Math.floor(v / inc) * inc; // aktuell nicht mehr genutzt, kann aber bleiben
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
+
+// NEU: Rundung auf die nächste 50er-Stufe (z.B. 4.689,65 -> 4.700; 4.674,99 -> 4.650)
+const roundToNearest50 = (v) => Math.round(v / 50) * 50;
 
 // === Zustand =================================================================
 function newState(){
@@ -67,7 +74,7 @@ let state = newState();
 // === Logik ===================================================================
 
 // Auto-Accept-Regel:
-// - Neu: innerhalb von 5% des aktuellen Angebots (1.5).
+// - Neu: innerhalb von 5% des aktuellen Angebots.
 // - Zusätzlich: alte Range-/Margin-Logik.
 function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
@@ -94,23 +101,31 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   const m = Number(minPrice);
   const r = Number(runde);
 
+  // HILFSFUNKTIONEN MIT 50er-RUNDUNG
   const applyPercentDown = () => {
     const p = randomChoice(PERCENT_STEPS);
-    const tentative = Math.max(m, prev * (1 - p));
-    return Math.round(tentative * 100) / 100;
+    const raw = prev * (1 - p);
+    let rounded = roundToNearest50(raw);
+    // nicht unter min_price und nicht über das vorherige Angebot
+    const bounded = Math.max(m, Math.min(rounded, prev));
+    return bounded;
   };
 
   const applyEuroDown = () => {
     const step = randomChoice(EURO_STEPS);
-    const tentative = Math.max(m, prev - step);
-    return Math.round(tentative * 100) / 100;
+    const raw = prev - step;
+    let rounded = roundToNearest50(raw);
+    const bounded = Math.max(m, Math.min(rounded, prev));
+    return bounded;
   };
 
   const applyPercentUp = () => {
     const p = randomChoice(PERCENT_STEPS);
-    // Nicht über das Initialangebot hinaus hochgehen
-    const tentative = Math.min(state.initial_offer, prev * (1 + p));
-    return Math.round(tentative * 100) / 100;
+    const raw = prev * (1 + p);
+    let rounded = roundToNearest50(raw);
+    // nicht unter prev und nicht über Initialangebot
+    const bounded = Math.min(state.initial_offer, Math.max(rounded, prev));
+    return bounded;
   };
 
   // Wichtig: r bezieht sich auf die aktuelle Verhandlungsrunde,
@@ -123,7 +138,7 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   }
 
   // Runde 4 & 5 (Angebote) -> Eingaben in Runde 3 & 4:
-  // Normale Probanden: feste Euro-Schritte 250–310 €.
+  // Normale Probanden: feste Euro-Schritte 250–420 €.
   // Lowballer (hasUnacceptable): NUR prozentuale Schritte (2–2,5 %), keine großen Sprünge.
   if (r === 3 || r === 4) {
     if (state.hasUnacceptable) {
@@ -271,14 +286,9 @@ function viewNegotiate(errorMsg){
       state.warningCount = (state.warningCount || 0) + 1;
       const isSecondWarning = state.warningCount >= 2;
 
-      // Text für die aktuelle Verwarnung setzen
-      if (state.warningCount === 1) {
-        state.warningText =
-          'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
-      } else {
-        state.warningText =
-          'Erneut ein solches Angebot. Die Verhandlung wird daher ohne Einigung beendet.';
-      }
+      // Text für die aktuelle Verwarnung setzen (dein gewünschter Text)
+      state.warningText =
+        'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
 
       // Verkäuferseite macht KEIN Zugeständnis
       const rowData = {
@@ -449,4 +459,3 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
-

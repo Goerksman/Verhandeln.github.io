@@ -162,7 +162,7 @@ function updatePatternMessage(){
 
   if (chainLen >= 3) {
     state.patternMessage =
-      'Mit solchen niedrig erhöhten Angeboten kommen wir nicht weit. Komm bitte schneller an deine Schmerzgrenze, dann können wir zu einem besseren Schluss kommen.';
+      'Mit solchen kleinen Erhöhungen wird das schwierig. Geh bitte ein Stück näher an deine Schmerzgrenze, dann finden wir bestimmt schneller einen fairen Deal.';
   } else {
     state.patternMessage = '';
   }
@@ -546,4 +546,5 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
+
 

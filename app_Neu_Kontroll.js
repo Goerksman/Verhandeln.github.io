@@ -303,7 +303,7 @@ function viewNegotiate(errorMsg){
     ${historyTable()}
     ${state.patternMessage
       ? `<p style="color:#1f2937;background:#e5e7eb;border:1px solid #d1d5db;padding:8px 10px;border-radius:8px;">
-           <strong>Hinweis der Verkäuferseite:</strong> ${state.patternMessage}
+           <strong>Verkäuferseite:</strong> ${state.patternMessage}
          </p>`
       : ``}
     ${state.warningText
@@ -546,5 +546,6 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
+
 
 

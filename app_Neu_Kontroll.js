@@ -311,6 +311,11 @@ function viewNegotiate(errorMsg){
            <strong>Verwarnung:</strong> ${state.warningText}
          </p>`
       : ``}
+    ${state.runde === 7
+      ? `<p style="color:#1f2937;background:#e5e7eb;border:1px solid #d1d5db;padding:8px 10px;border-radius:8px;">
+           <strong>Verkäuferseite:</strong> Das ist meine Schmerzgrenze. Die Ledercouch ist zu Wertvoll, um noch weiter runter zugehen.
+         </p>`
+      : ``}
     ${errorMsg
       ? `<p style="color:#b91c1c;"><strong>Fehler:</strong> ${errorMsg}</p>`
       : ``}
@@ -546,6 +551,7 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
+
 
 
 

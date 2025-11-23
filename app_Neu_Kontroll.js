@@ -169,14 +169,14 @@ function viewVignette(){
     <h1>Designer-Verkaufsmesse</h1>
     <p class="muted">Stelle dir folgende Situation vor:</p>
     <p>Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
-       Eine Besucherin bzw. ein Besucher möchte ihre/seine <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
+       Ein Besucher möchte sein <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
        Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design.
-       Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne
-       liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
+       Auf der Messe siehst du viele verschiedene Designer-Sofas und die Preisspanne ähnlicher Designer-
+       Ledersofas liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
        verhandelt über den Verkaufspreis.</p>
     <p>Auf der nächsten Seite beginnt die Preisverhandlung mit der <b>Verkäuferseite</b>.
        Du kannst ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen. Achte darauf, dass die Messe
-       gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in
+       gut besucht ist und die Verkäuferseite realistisch bleiben möchte und auch selbstbewusst in
        die Verhandlung geht.</p>
     <p class="muted"><b>Hinweis:</b> Die Verhandlung umfasst maximal ${CONFIG.MAX_RUNDEN} Runden.</p>
     <div class="grid">
@@ -293,7 +293,7 @@ function viewNegotiate(errorMsg){
 
       // Text für die aktuelle Verwarnung setzen
       state.warningText =
-        'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
+        'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte ich die Verhandlung an der Stelle nicht mehr weiterführen.';
 
       // Verkäuferseite macht KEIN Zugeständnis
       const rowData = {
@@ -464,3 +464,4 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
+

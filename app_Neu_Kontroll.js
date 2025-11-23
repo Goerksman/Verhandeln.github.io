@@ -72,7 +72,7 @@ function newState(){
     // Grund für Verhandlungsende
     finish_reason: null,
 
-    // Mustererkennung kleiner Erhöhungen
+    // Hinweis-Text (kleine Erhöhungen)
     patternMessage: '',
 
     // tatsächlicher Einigungspreis (für Ergebnisanzeige)
@@ -120,8 +120,9 @@ function updatePatternMessage(){
   const counters = [];
 
   // akzeptable Probanden-Angebote sammeln
-  for (const h of state.history) {
-    let c = h.proband_counter;
+  for (var i = 0; i < state.history.length; i++) {
+    var h = state.history[i];
+    var c = h.proband_counter;
     if (c == null || c === '') continue;
     c = Number(c);
     if (!Number.isFinite(c)) continue;
@@ -134,18 +135,18 @@ function updatePatternMessage(){
     return;
   }
 
-  let chainLen = 1;
-  for (let i = 1; i < counters.length; i++) {
-    const prev = counters[i - 1];
-    const curr = counters[i];
-    const diff = curr - prev;
+  var chainLen = 1;
+  for (var j = 1; j < counters.length; j++) {
+    var prev = counters[j - 1];
+    var curr = counters[j];
+    var diff = curr - prev;
 
     if (diff < 0) {
       chainLen = 1;
       continue;
     }
 
-    const threshold = getThresholdForAmount(prev);
+    var threshold = getThresholdForAmount(prev);
     if (threshold == null) {
       chainLen = 1;
       continue;
@@ -419,3 +420,129 @@ function viewNegotiate(errorMsg){
       accepted: false,
       finished: false
     });
+
+    state.history.push({ runde: state.runde, algo_offer: prev, proband_counter: num, accepted:false });
+
+    // Mustererkennung für kleine Erhöhungen (Chat-Hinweis aktualisieren)
+    updatePatternMessage();
+
+    state.current_offer = next;
+    state.last_concession = concession;
+
+    if (state.runde >= CONFIG.MAX_RUNDEN) {
+      state.finished = true;
+      state.finish_reason = 'max_rounds';
+      viewThink(() => viewDecision());
+    } else {
+      state.runde += 1;
+      viewThink(() => viewNegotiate());
+    }
+  }
+
+  sendBtn.addEventListener('click', handleSubmit);
+  inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); } });
+
+  document.getElementById('acceptBtn').addEventListener('click', () => {
+    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
+    state.accepted = true;
+    state.finished = true;
+    state.finish_reason = 'accepted';
+    state.deal_price = state.current_offer;
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: true,
+      finished: true,
+      deal_price: state.current_offer
+    });
+    viewThink(() => viewFinish(true));
+  });
+}
+
+function viewDecision(){
+  app.innerHTML = `
+    <h1>Letzte Runde der Verhandlung erreicht.</h1>
+    <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
+    <div class="grid">
+      <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
+        <div><strong>Letztes Angebot der Verkäuferseite:</strong> ${eur(state.current_offer)}</div>
+      </div>
+      <button id="takeBtn">Letztes Angebot annehmen</button>
+      <button id="noBtn" class="ghost">Ohne Einigung beenden</button>
+    </div>
+    ${historyTable()}
+  `;
+  document.getElementById('takeBtn').addEventListener('click', () => {
+    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
+    state.accepted = true;
+    state.finished = true;
+    state.finish_reason = 'accepted';
+    state.deal_price = state.current_offer;
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: true,
+      finished: true,
+      deal_price: state.current_offer
+    });
+    viewThink(() => viewFinish(true));
+  });
+  document.getElementById('noBtn').addEventListener('click', () => {
+    state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:false });
+    state.accepted = false;
+    state.finished = true;
+    state.finish_reason = 'max_rounds';
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: false,
+      finished: true
+    });
+    viewThink(() => viewFinish(false));
+  });
+}
+
+function viewFinish(accepted){
+  // Dealpreis bestimmen (falls mal nicht gesetzt, fallback auf current_offer)
+  var dealPrice = state.deal_price != null ? state.deal_price : state.current_offer;
+
+  var resultText;
+  if (accepted) {
+    resultText =
+      'Annahme in Runde ' + state.runde + ' bei ' + eur(dealPrice) +
+      '. Letztes Angebot der Verkäuferseite: ' + eur(state.current_offer) + '.';
+  } else if (state.finish_reason === 'warnings') {
+    resultText =
+      'Verhandlung aufgrund wiederholt unakzeptabler Angebote abgebrochen. ' +
+      'Letztes Angebot der Verkäuferseite: ' + eur(state.current_offer) + '.';
+  } else {
+    resultText =
+      'Maximale Rundenzahl erreicht. Letztes Angebot der Verkäuferseite: ' +
+      eur(state.current_offer) + '.';
+  }
+
+  app.innerHTML = `
+    <h1>Verhandlung abgeschlossen</h1>
+    <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
+    <div class="grid">
+      <div class="card" style="padding:16px;background:#fafafa;border-radius:12px;border:1px dashed var(--accent);">
+        <div><strong>Ergebnis:</strong> ${resultText}</div>
+      </div>
+      <button id="restartBtn">Neue Verhandlung starten</button>
+    </div>
+    ${historyTable()}
+  `;
+  document.getElementById('restartBtn').addEventListener('click', () => {
+    state = newState();
+    viewVignette();
+  });
+}
+
+// === Start ===================================================================
+viewVignette();

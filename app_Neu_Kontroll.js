@@ -5,7 +5,7 @@ const CONFIG = {
   MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined,
   MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,
   ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,
-  // Standard jetzt 8 Runden statt 7
+  // Standard jetzt 8 Runden
   MAX_RUNDEN: parseInt(Q.get('r') || '8', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
@@ -18,13 +18,12 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
   ? CONFIG.MIN_PRICE
   : Math.round(CONFIG.INITIAL_OFFER * CONFIG.MIN_PRICE_FACTOR);
 
-// === Konstanten für die neue Logik ==========================================
+// === Konstanten für die Logik ===============================================
 
 // Grenzwert für "unakzeptable" Angebote
 const UNACCEPTABLE_LIMIT = 2250;
 
-// Prozentschritte für rundenweise Anpassung
-// 2,0 % bis 3,0 % in 0,1 %-Schritten
+// Prozentschritte für prozentuale Anpassung (2,0 % bis 3,0 %)
 const PERCENT_STEPS = [
   0.02, 0.021, 0.022, 0.023, 0.024, 0.025,
   0.026, 0.027, 0.028, 0.029, 0.03
@@ -42,11 +41,10 @@ const sendRow = (row) => (window.sendRow ? window.sendRow(row) : console.log('[s
 const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
-const roundDownInc = (v, inc) => Math.floor(v / inc) * inc; // kann bleiben, wird aktuell nicht genutzt
+const roundDownInc = (v, inc) => Math.floor(v / inc) * inc;
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
 
-// NEU: Rundung auf die nächste 25er-Stufe
-// z.B. 4712,49 -> 4700; 4712,50 -> 4725
+// Rundung auf die nächste 25er-Stufe (z.B. 4712,49 -> 4700; 4712,50 -> 4725)
 const roundToNearest25 = (v) => Math.round(v / 25) * 25;
 
 // === Zustand =================================================================
@@ -62,24 +60,27 @@ function newState(){
     last_concession: null,
     finished: false,
     accepted: false,
-    // True, wenn es mind. ein Angebot < 2.250 € vor dem ersten akzeptablen gab
+
+    // Angebot < 2.250 € vor erstem akzeptablen Angebot?
     hasUnacceptable: false,
-    // True, sobald es mind. ein Angebot >= 2.250 € gab
+    // Es gab mind. ein Angebot >= 2.250 €
     hasCrossedThreshold: false,
+
     // Verwarnungslogik
     warningCount: 0,
     warningText: '',
-    // Grund, warum die Verhandlung beendet wurde
-    finish_reason: null
+    // Grund für Verhandlungsende
+    finish_reason: null,
+
+    // Mustererkennung kleiner Erhöhungen
+    patternMessage: ''       // Text, den der Algorithmus im Chat anzeigt
   };
 }
 let state = newState();
 
 // === Logik ===================================================================
 
-// Auto-Accept-Regel:
-// - Neu: innerhalb von 5% des aktuellen Angebots.
-// - Zusätzlich: alte Range-/Margin-Logik.
+// Auto-Accept-Regel
 function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
   if (!Number.isFinite(c)) return false;
@@ -93,10 +94,68 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   // Range-Regel (z.B. 4.700–4.800 €)
   if (c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) return true;
 
-  // Margin-Regel (z.B. 12 % unter dem Initialangebot, aber nicht unter MIN_PRICE)
+  // Margin-Regel (z.B. 12 % unter Initialangebot, aber nicht unter MIN_PRICE)
   const margin = (CONFIG.ACCEPT_MARGIN > 0 && CONFIG.ACCEPT_MARGIN < 0.5) ? CONFIG.ACCEPT_MARGIN : 0.12;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
+}
+
+// Dynamische Schwelle je nach Betragsklasse
+function getThresholdForAmount(prev){
+  if (prev >= 2250 && prev < 3000) return 0.05; // 5 %
+  if (prev >= 3000 && prev < 4000) return 0.04; // 4 %
+  if (prev >= 4000 && prev < 5000) return 0.03; // 3 %
+  return null;
+}
+
+// Mustererkennung für "kleine Erhöhungen" der Probandenangebote
+// - Der Prozentsatz richtet sich nach der Betragsklasse des VORHERIGEN Angebots
+// - Ab mind. 3 akzeptablen Angeboten
+//   -> wenn die LETZTE Erhöhung diff <= threshold * prev ist, wird der Hinweis angezeigt,
+//   -> sonst nicht.
+function updatePatternMessage(){
+  const counters = [];
+
+  // akzeptable Probanden-Angebote sammeln (>= 2.250 €)
+  for (const h of state.history) {
+    let c = h.proband_counter;
+    if (c == null || c === '') continue;
+    c = Number(c);
+    if (!Number.isFinite(c)) continue;
+    if (c < UNACCEPTABLE_LIMIT) continue; // Lowball-Angebote ignorieren
+    counters.push(c);
+  }
+
+  // Noch zu wenig Daten für ein Muster
+  if (counters.length < 3) {
+    state.patternMessage = '';
+    return;
+  }
+
+  // Nur auf die letzte Erhöhung schauen
+  const prev = counters[counters.length - 2];
+  const curr = counters[counters.length - 1];
+  const diff = curr - prev;
+
+  if (diff < 0) {
+    state.patternMessage = '';
+    return;
+  }
+
+  const threshold = getThresholdForAmount(prev);
+  if (threshold == null) {
+    state.patternMessage = '';
+    return;
+  }
+
+  // Wenn die aktuelle Erhöhung "klein" ist → Hinweis AN
+  if (diff <= prev * threshold) {
+    state.patternMessage =
+      'Mit solchen niedrig erhöhten Angeboten kommen wir nicht weit. Komm bitte schneller an deine Schmerzgrenze, dann können wir zu einem besseren Schluss kommen.';
+  } else {
+    // Sonst → Hinweis AUS
+    state.patternMessage = '';
+  }
 }
 
 // Angebotslogik mit 8 Runden:
@@ -108,12 +167,11 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   const m = Number(minPrice);
   const r = Number(runde);
 
-  // Hilfsfunktionen MIT 25er-RUNDUNG
+  // Hilfsfunktionen mit 25er-Rundung
   const applyPercentDown = () => {
     const p = randomChoice(PERCENT_STEPS);
     const raw = prev * (1 - p);
     let rounded = roundToNearest25(raw);
-    // nicht unter min_price und nicht über das vorherige Angebot
     const bounded = Math.max(m, Math.min(rounded, prev));
     return bounded;
   };
@@ -130,26 +188,22 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
     const p = randomChoice(PERCENT_STEPS);
     const raw = prev * (1 + p);
     let rounded = roundToNearest25(raw);
-    // nicht unter prev und nicht über Initialangebot
     const bounded = Math.min(state.initial_offer, Math.max(rounded, prev));
     return bounded;
   };
 
-  // Wichtig: r bezieht sich auf die aktuelle Verhandlungsrunde,
-  // das Ergebnis wird als Angebot in der NÄCHSTEN Runde angezeigt.
-
-  // Runden 1–3: immer prozentual nach unten
+  // Runden 1–3: prozentual nach unten
   if (r === 1 || r === 2 || r === 3) {
     return applyPercentDown();
   }
 
   // Runden 4–6:
-  // Normale Probanden: feste Euro-Schritte 250–420 € nach unten
-  // Lowballer (hasUnacceptable): NUR prozentuale Schritte (kein großer Sprung)
   if (r === 4 || r === 5 || r === 6) {
     if (state.hasUnacceptable) {
+      // Lowballer: nur prozentuale Schritte
       return applyPercentDown();
     } else {
+      // Normal: Euro-Schritte
       return applyEuroDown();
     }
   }
@@ -159,7 +213,6 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
     return applyPercentUp();
   }
 
-  // Fallback (sollte praktisch nicht vorkommen)
   return prev;
 }
 
@@ -169,14 +222,14 @@ function viewVignette(){
     <h1>Designer-Verkaufsmesse</h1>
     <p class="muted">Stelle dir folgende Situation vor:</p>
     <p>Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> für Designermöbel.
-       Ein Besucher möchte sein <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
+       Eine Besucherin bzw. ein Besucher möchte ihre/seine <b>gebrauchtes Designer-Ledersofa</b> verkaufen.
        Es handelt sich um ein hochwertiges, gepflegtes Stück mit einzigartigem Design.
-       Auf der Messe siehst du viele verschiedene Designer-Sofas und die Preisspanne ähnlicher Designer-
-       Ledersofas liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
+       Auf der Messe siehst du viele verschiedene Designer-Couches; die Preisspanne
+       liegt typischerweise zwischen <b>2.500 € und 10.000 €</b>. Du kommst ins Gespräch und ihr
        verhandelt über den Verkaufspreis.</p>
     <p>Auf der nächsten Seite beginnt die Preisverhandlung mit der <b>Verkäuferseite</b>.
        Du kannst ein <b>Gegenangebot</b> eingeben oder das Angebot annehmen. Achte darauf, dass die Messe
-       gut besucht ist und die Verkäuferseite realistisch bleiben möchte und auch selbstbewusst in
+       gut besucht ist und die Verkäuferseite realistisch bleiben möchte, aber selbstbewusst in
        die Verhandlung geht.</p>
     <p class="muted"><b>Hinweis:</b> Die Verhandlung umfasst maximal ${CONFIG.MAX_RUNDEN} Runden.</p>
     <div class="grid">
@@ -238,6 +291,11 @@ function viewNegotiate(errorMsg){
       <button id="acceptBtn" class="ghost">Angebot annehmen &amp; Verhandlung beenden</button>
     </div>
     ${historyTable()}
+    ${state.patternMessage
+      ? `<p style="color:#1f2937;background:#e5e7eb;border:1px solid #d1d5db;padding:8px 10px;border-radius:8px;">
+           <strong>Hinweis der Verkäuferseite:</strong> ${state.patternMessage}
+         </p>`
+      : ``}
     ${state.warningText
       ? `<p style="color:#b45309;background:#fffbeb;border:1px solid #fbbf24;padding:8px 10px;border-radius:8px;">
            <strong>Verwarnung:</strong> ${state.warningText}
@@ -282,27 +340,23 @@ function viewNegotiate(errorMsg){
 
     // Unakzeptable Angebote (< 2.250 €) + Verwarnungslogik
     if (num < UNACCEPTABLE_LIMIT) {
-      // Lowballer merken, solange noch kein akzeptables Angebot kam
       if (!state.hasCrossedThreshold) {
         state.hasUnacceptable = true;
       }
 
-      // Verwarnungszähler erhöhen
       state.warningCount = (state.warningCount || 0) + 1;
       const isSecondWarning = state.warningCount >= 2;
 
-      // Text für die aktuelle Verwarnung setzen
       state.warningText =
-        'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte ich die Verhandlung an der Stelle nicht mehr weiterführen.';
+        'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art, möchte die Verhandlung an der Stelle nicht mehr weiterführen.';
 
-      // Verkäuferseite macht KEIN Zugeständnis
       const rowData = {
         participant_id: state.participant_id,
         runde: state.runde,
         algo_offer: prevOffer,
         proband_counter: num,
         accepted: false,
-        finished: isSecondWarning  // bei 2. Verwarnung als beendet markieren
+        finished: isSecondWarning
       };
       sendRow(rowData);
 
@@ -316,13 +370,11 @@ function viewNegotiate(errorMsg){
       state.last_concession = 0;
 
       if (isSecondWarning) {
-        // Verhandlung abbrechen
         state.finished = true;
         state.accepted = false;
         state.finish_reason = 'warnings';
         viewThink(() => viewFinish(false));
       } else {
-        // Nach der ersten Verwarnung ganz normal in die nächste Runde / ggf. Max-Runden-Ende
         if (state.runde >= CONFIG.MAX_RUNDEN) {
           state.finished = true;
           state.finish_reason = 'max_rounds';
@@ -344,7 +396,7 @@ function viewNegotiate(errorMsg){
     // vorhandene Verwarnungstexte zurücksetzen
     state.warningText = '';
 
-    // Normale Runde mit neuer Strategie
+    // Normale Runde mit bisheriger Strategie
     const prev = state.current_offer;
     const next = computeNextOffer(prev, state.min_price, num, state.runde, state.last_concession);
     const concession = prev - next;
@@ -359,6 +411,10 @@ function viewNegotiate(errorMsg){
     });
 
     state.history.push({ runde: state.runde, algo_offer: prev, proband_counter: num, accepted:false });
+
+    // Mustererkennung für kleine Erhöhungen (Chat-Hinweis aktualisieren)
+    updatePatternMessage();
+
     state.current_offer = next;
     state.last_concession = concession;
 
@@ -372,11 +428,9 @@ function viewNegotiate(errorMsg){
     }
   }
 
-  // Button + Enter
   sendBtn.addEventListener('click', handleSubmit);
   inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit(); } });
 
-  // Verkäufer-Angebot annehmen
   document.getElementById('acceptBtn').addEventListener('click', () => {
     state.history.push({ runde: state.runde, algo_offer: state.current_offer, proband_counter: null, accepted:true });
     state.accepted = true; state.finished = true;
@@ -464,4 +518,3 @@ function viewFinish(accepted){
 
 // === Start ===================================================================
 viewVignette();
-

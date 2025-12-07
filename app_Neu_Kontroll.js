@@ -7,7 +7,9 @@ const CONFIG = {
   MIN_PRICE: Q.has('min') ? Number(Q.get('min')) : undefined,
   MIN_PRICE_FACTOR: Number(Q.get('mf')) || 0.70,
   ACCEPT_MARGIN: Number(Q.get('am')) || 0.12,
-  MAX_RUNDEN: parseInt(Q.get('r') || '8', 10),
+  // Zufällige Rundenzahl 8–12 (optional über rmin/rmax konfigurierbar)
+  ROUNDS_MIN: parseInt(Q.get('rmin') || '8', 10),
+  ROUNDS_MAX: parseInt(Q.get('rmax') || '12', 10),
   THINK_DELAY_MS_MIN: parseInt(Q.get('tmin') || '1200', 10),
   THINK_DELAY_MS_MAX: parseInt(Q.get('tmax') || '2800', 10),
   ACCEPT_RANGE_MIN: Number(Q.get('armin')) || 4700,
@@ -36,7 +38,22 @@ const EURO_STEPS = [
 /* Hilfsfunktionen                                                            */
 /* ========================================================================== */
 const app = document.getElementById('app');
-const sendRow = (row) => (window.sendRow ? window.sendRow(row) : console.log('[sendRow fallback]', row));
+
+// sendRow erweitert um player_id & proband_code
+const sendRow = (row) => {
+  const payload = {
+    participant_id: state?.participant_id,
+    player_id: window.playerId,
+    proband_code: window.probandCode,
+    ...row
+  };
+  if (window.sendRow) {
+    window.sendRow(payload);
+  } else {
+    console.log('[sendRow fallback]', payload);
+  }
+};
+
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
@@ -49,10 +66,14 @@ function newState(){
   return {
     participant_id: crypto.randomUUID?.() || ('x_'+Date.now()+Math.random().toString(36).slice(2)),
     runde: 1,
+    // Zufällige Rundenanzahl 8–12 (oder aus CONFIG)
+    max_runden: randInt(CONFIG.ROUNDS_MIN, CONFIG.ROUNDS_MAX),
+
     min_price: CONFIG.MIN_PRICE,
     max_price: CONFIG.INITIAL_OFFER,
     initial_offer: CONFIG.INITIAL_OFFER,
     current_offer: CONFIG.INITIAL_OFFER,
+
     history: [],
     last_concession: null,
     finished: false,
@@ -87,6 +108,88 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const margin = CONFIG.ACCEPT_MARGIN;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
+}
+
+/* ========================================================================== */
+/* Abbruchwahrscheinlichkeit                                                 */
+/* ========================================================================== */
+
+function abortProbability(userOffer) {
+  let chance = 0;
+
+  // 1) Extrem unverschämte Angebote sofort sehr riskant
+  if (userOffer < 1500) return 100;
+
+  // 2) Angebote <2250 erhöhen Risiko stark
+  if (userOffer < UNACCEPTABLE_LIMIT) {
+    chance += randInt(20, 40);
+  }
+
+  // 3) Bereich 2250–3000 → kleine Schritte gefährlich
+  const last = state.history[state.history.length - 1];
+  if (userOffer >= UNACCEPTABLE_LIMIT && userOffer < 3000) {
+    if (last && last.proband_counter != null) {
+      const diff = Math.abs(userOffer - Number(last.proband_counter));
+      if (diff < 100) {
+        chance += randInt(10, 25);
+      }
+    }
+  }
+
+  // 4) Bereich 3000–3700 → leichte Zufallswahrscheinlichkeit
+  if (userOffer >= 3000 && userOffer < 3700) {
+    chance += randInt(1, 7);
+  }
+
+  // 5) Bereich 3700–4000 → kaum Risiko
+  if (userOffer >= 3700 && userOffer < 4000) {
+    chance += randInt(0, 3);
+  }
+
+  // 6) Ab 4000 → diff-Regel entfällt, Risiko nur minimal
+  if (userOffer >= 4000) {
+    chance += randInt(0, 2);
+  }
+
+  // 7) Pro Runde steigt Risiko leicht
+  chance += state.runde * 2;
+
+  return Math.min(chance, 75);
+}
+
+function maybeAbort(userOffer) {
+  const chance = abortProbability(userOffer);
+  const roll = randInt(1, 100);
+
+  if (roll <= chance) {
+
+    // Logging des Abbruchs
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: userOffer,
+      accepted: false,
+      finished: true,
+      deal_price: ''
+    });
+
+    // Letzte Aktion in den Verlauf schreiben
+    state.history.push({
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: userOffer,
+      accepted: false
+    });
+
+    state.finished = true;
+    state.accepted = false;
+    state.finish_reason = 'abort';
+
+    viewAbort(chance);
+    return true;
+  }
+  return false;
 }
 
 /* ========================================================================== */
@@ -143,7 +246,7 @@ function updatePatternMessage(){
 }
 
 /* ========================================================================== */
-/* Angebotslogik (8 Runden)                                                   */
+/* Angebotslogik (8–12 Runden)                                               */
 /* ========================================================================== */
 
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
@@ -191,7 +294,7 @@ function viewVignette(){
     <h1>Designer-Verkaufsmesse</h1>
     <p class="muted">Stelle dir folgende Situation vor:</p>
     <p>Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> …</p>
-    <p class="muted"><b>Hinweis:</b> Die Verhandlung umfasst maximal ${CONFIG.MAX_RUNDEN} Runden.</p>
+    <p class="muted"><b>Hinweis:</b> Die Verhandlung dauert zufällig ${CONFIG.ROUNDS_MIN}–${CONFIG.ROUNDS_MAX} Runden.</p>
     <div class="grid">
       <label class="consent">
         <input id="consent" type="checkbox" />
@@ -232,17 +335,58 @@ function historyTable(){
 }
 
 /* ========================================================================== */
+/* Abbruch-Screen                                                             */
+/* ========================================================================== */
+
+function viewAbort(chance){
+  app.innerHTML = `
+    <h1>Verhandlung abgebrochen</h1>
+    <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
+
+    <div class="card" style="padding:16px;border:1px dashed var(--accent);">
+      <strong>Die Verkäuferseite hat die Verhandlung beendet.</strong>
+      <p class="muted" style="margin-top:8px;">Abbruchwahrscheinlichkeit in dieser Runde: ${chance}%</p>
+    </div>
+
+    <button id="restartBtn">Neue Verhandlung</button>
+
+    ${historyTable()}
+  `;
+
+  document.getElementById('restartBtn').onclick = () => {
+    state = newState();
+    viewVignette();
+  };
+}
+
+/* ========================================================================== */
 /* Hauptscreen der Verhandlung                                                */
 /* ========================================================================== */
 
 function viewNegotiate(errorMsg){
+  const abortChance = abortProbability(state.current_offer);
+  let color = '#16a34a';
+  if (abortChance > 50) color = '#ea580c';
+  else if (abortChance > 25) color = '#eab308';
+
   app.innerHTML = `
     <h1>Verkaufsverhandlung</h1>
+    <p class="muted">Spieler-ID: ${window.playerId ?? '-'}</p>
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
 
     <div class="grid">
       <div class="card" style="padding:16px;border:1px dashed var(--accent);">
         <strong>Aktuelles Angebot:</strong> ${eur(state.current_offer)}
+      </div>
+
+      <div style="
+        background:${color}22;
+        border-left:6px solid ${color};
+        padding:10px;
+        border-radius:8px;
+        margin-bottom:10px;">
+        <b style="color:${color};">Abbruchwahrscheinlichkeit:</b>
+        <span style="color:${color}; font-weight:600;">${abortChance}%</span>
       </div>
 
       <label for="counter">Dein Gegenangebot (€)</label>
@@ -315,7 +459,6 @@ function handleSubmit(raw){
       accepted: true
     });
 
-    // LOGGING
     sendRow({
       participant_id: state.participant_id,
       runde: state.runde,
@@ -333,8 +476,37 @@ function handleSubmit(raw){
   }
 
   /* ---------------------------------------------------------------------- */
-  /* UNAKZEPTABLE ANGEBOTE (<2250)                                         */
+  /* EXTREM UNAKZEPTABLE ANGEBOTE (<1500) → Sofortiger Abbruch              */
   /* ---------------------------------------------------------------------- */
+  if (num < 1500) {
+
+    state.history.push({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: false
+    });
+
+    sendRow({
+      participant_id: state.participant_id,
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: false,
+      finished: true,
+      deal_price: ''
+    });
+
+    state.finished = true;
+    state.accepted = false;
+    state.finish_reason = 'abort';
+
+    return viewAbort(100);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* UNAKZEPTABLE ANGEBOTE (1500–<2250)                                     */
+/* ---------------------------------------------------------------------- */
   if (num < UNACCEPTABLE_LIMIT) {
 
     if (!state.hasCrossedThreshold) state.hasUnacceptable = true;
@@ -369,7 +541,7 @@ function handleSubmit(raw){
       return viewThink(() => viewFinish(false));
     }
 
-    if (state.runde >= CONFIG.MAX_RUNDEN) {
+    if (state.runde >= state.max_runden) {
       state.finished = true;
       state.finish_reason = 'max_rounds';
       return viewThink(() => viewDecision());
@@ -385,6 +557,11 @@ function handleSubmit(raw){
 
   state.warningText = '';
   if (!state.hasCrossedThreshold) state.hasCrossedThreshold = true;
+
+  // Abbruchwahrscheinlichkeit prüfen (kann sofort beenden)
+  if (maybeAbort(num)) {
+    return;
+  }
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
   const concession = prevOffer - next;
@@ -411,7 +588,7 @@ function handleSubmit(raw){
   state.current_offer = next;
   state.last_concession = concession;
 
-  if (state.runde >= CONFIG.MAX_RUNDEN) {
+  if (state.runde >= state.max_runden) {
     state.finished = true;
     state.finish_reason = 'max_rounds';
     return viewThink(() => viewDecision());
@@ -533,7 +710,3 @@ function viewFinish(accepted){
 /* ========================================================================== */
 
 viewVignette();
-
-
-
-

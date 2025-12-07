@@ -22,7 +22,7 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
 /* ========================================================================== */
 /* Spieler-ID / Probandencode initialisieren                                  */
 /* ========================================================================== */
-/* 
+/*
    Falls player_id oder proband_code über die URL kommen (z.B. ?player_id=XYZ),
    werden sie verwendet; sonst wird eine zufällige ID erzeugt.
 */
@@ -66,21 +66,6 @@ const EURO_STEPS = [
 /* ========================================================================== */
 const app = document.getElementById('app');
 
-// sendRow erweitert um player_id & proband_code
-const sendRow = (row) => {
-  const payload = {
-    participant_id: state?.participant_id,
-    player_id: window.playerId,
-    proband_code: window.probandCode,
-    ...row
-  };
-  if (window.sendRow) {
-    window.sendRow(payload);
-  } else {
-    console.log('[sendRow fallback]', payload);
-  }
-};
-
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
@@ -117,6 +102,30 @@ function newState(){
   };
 }
 let state = newState();
+
+/* ========================================================================== */
+/* Logging – exakt wie beim Gruppenpartner                                   */
+/* ========================================================================== */
+function logRound(row) {
+  const payload = {
+    participant_id: state.participant_id,
+    player_id: window.playerId,
+    proband_code: window.probandCode,
+
+    runde: row.runde,
+    algo_offer: row.algo_offer,
+    proband_counter: row.proband_counter,
+    accepted: row.accepted,
+    finished: row.finished,
+    deal_price: row.deal_price
+  };
+
+  if (window.sendRow) {
+    window.sendRow(payload);
+  } else {
+    console.log('[sendRow fallback]', payload);
+  }
+}
 
 /* ========================================================================== */
 /* Auto-Accept-Regeln                                                        */
@@ -191,8 +200,7 @@ function maybeAbort(userOffer) {
   if (roll <= chance) {
 
     // Logging des Abbruchs
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: userOffer,
@@ -444,8 +452,7 @@ function viewNegotiate(errorMsg){
       accepted: true
     });
 
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: '',
@@ -486,8 +493,7 @@ function handleSubmit(raw){
       accepted: true
     });
 
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: prevOffer,
       proband_counter: num,
@@ -514,8 +520,7 @@ function handleSubmit(raw){
       accepted: false
     });
 
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: prevOffer,
       proband_counter: num,
@@ -544,14 +549,13 @@ function handleSubmit(raw){
     state.warningText =
       'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art möchte ich nicht weiter verhandeln.';
 
-    // LOGGING
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: prevOffer,
       proband_counter: num,
       accepted: false,
-      finished: second
+      finished: second,
+      deal_price: ''
     });
 
     state.history.push({
@@ -593,14 +597,13 @@ function handleSubmit(raw){
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
   const concession = prevOffer - next;
 
-  // LOGGING (jede Runde)
-  sendRow({
-    participant_id: state.participant_id,
+  logRound({
     runde: state.runde,
     algo_offer: prevOffer,
     proband_counter: num,
     accepted: false,
-    finished: false
+    finished: false,
+    deal_price: ''
   });
 
   state.history.push({
@@ -646,7 +649,6 @@ function viewDecision(){
 
   document.getElementById('takeBtn').onclick = () => {
 
-    // History
     state.history.push({
       runde: state.runde,
       algo_offer: state.current_offer,
@@ -654,9 +656,7 @@ function viewDecision(){
       accepted:true
     });
 
-    // LOGGING
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: '',
@@ -680,14 +680,13 @@ function viewDecision(){
       accepted:false
     });
 
-    // LOGGING
-    sendRow({
-      participant_id: state.participant_id,
+    logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: '',
       accepted: false,
-      finished: true
+      finished: true,
+      deal_price: ''
     });
 
     state.accepted = false;
@@ -709,6 +708,8 @@ function viewFinish(accepted){
     text = `Einigung in Runde ${state.runde} bei ${eur(dealPrice)}.`;
   } else if (state.finish_reason === 'warnings') {
     text = `Verhandlung wegen mehrfach unakzeptabler Angebote beendet.`;
+  } else if (state.finish_reason === 'abort') {
+    text = `Verhandlung vom Verkäufer abgebrochen.`;
   } else {
     text = `Maximale Runden erreicht.`;
   }

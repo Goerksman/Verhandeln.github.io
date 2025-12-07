@@ -64,7 +64,7 @@ const app = document.getElementById('app');
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
-// Neue Rundung auf 50er Schritte
+// Rundung auf 50er Schritte
 const roundToNearest50 = (v) => Math.round(v / 50) * 50;
 
 /* ========================================================================== */
@@ -87,14 +87,9 @@ function newState(){
     finished: false,
     accepted: false,
 
-    hasUnacceptable: false,
-    hasCrossedThreshold: false,
-
-    warningCount: 0,
-    warningText: '',
-    finish_reason: null,
     patternMessage: '',
-    deal_price: null
+    deal_price: null,
+    finish_reason: null
   };
 }
 let state = newState();
@@ -412,7 +407,6 @@ function viewNegotiate(errorMsg){
 
     ${historyTable()}
     ${state.patternMessage ? `<p class="info">${state.patternMessage}</p>` : ''}
-    ${state.warningText ? `<p class="warning">${state.warningText}</p>` : ''}
     ${errorMsg ? `<p class="error">${errorMsg}</p>` : ''}
   `;
 
@@ -514,57 +508,8 @@ function handleSubmit(raw){
   }
 
   /* ---------------------------------------------------------------------- */
-  /* UNAKZEPTABLE ANGEBOTE (1500–<2250)                                     */
+  /* Normale (>=1500) Angebote – alles läuft über Abbruchwahrscheinlichkeit */
   /* ---------------------------------------------------------------------- */
-  if (num < UNACCEPTABLE_LIMIT) {
-
-    if (!state.hasCrossedThreshold) state.hasUnacceptable = true;
-
-    state.warningCount++;
-    const second = state.warningCount >= 2;
-
-    state.warningText =
-      'Ein solches Angebot ist sehr inakzeptabel. Bei einem erneuten Angebot in der Art möchte ich nicht weiter verhandeln.';
-
-    logRound({
-      runde: state.runde,
-      algo_offer: prevOffer,
-      proband_counter: num,
-      accepted: false,
-      finished: second,
-      deal_price: ''
-    });
-
-    state.history.push({
-      runde: state.runde,
-      algo_offer: prevOffer,
-      proband_counter: num,
-      accepted: false
-    });
-
-    if (second) {
-      state.finished = true;
-      state.accepted = false;
-      state.finish_reason = 'warnings';
-      return viewThink(() => viewFinish(false));
-    }
-
-    if (state.runde >= state.max_runden) {
-      state.finished = true;
-      state.finish_reason = 'max_rounds';
-      return viewThink(() => viewDecision());
-    }
-
-    state.runde++;
-    return viewThink(() => viewNegotiate());
-  }
-
-  /* ---------------------------------------------------------------------- */
-  /* AKZEPTABLE ANGEBOTE (>=2250)                                          */
-  /* ---------------------------------------------------------------------- */
-
-  state.warningText = '';
-  if (!state.hasCrossedThreshold) state.hasCrossedThreshold = true;
 
   // Abbruchwahrscheinlichkeit prüfen (kann sofort beenden)
   if (maybeAbort(num)) {
@@ -683,8 +628,6 @@ function viewFinish(accepted){
   let text;
   if (accepted) {
     text = `Einigung in Runde ${state.runde} bei ${eur(dealPrice)}.`;
-  } else if (state.finish_reason === 'warnings') {
-    text = `Verhandlung wegen mehrfach unakzeptabler Angebote beendet.`;
   } else if (state.finish_reason === 'abort') {
     text = `Verhandlung vom Verkäufer abgebrochen.`;
   } else {
@@ -696,7 +639,7 @@ function viewFinish(accepted){
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
 
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
-      <strong>Ergebnis:</strong> ${text}
+      <strong>Ergebnis:</strong> ${text}</strong>
     </div>
 
     <button id="restartBtn">Neue Verhandlung</button>

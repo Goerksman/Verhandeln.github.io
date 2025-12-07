@@ -56,11 +56,6 @@ const PERCENT_STEPS = [
   0.026, 0.027, 0.028, 0.029, 0.03
 ];
 
-const EURO_STEPS = [
-  250, 260, 270, 280, 290, 300, 310,
-  320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420
-];
-
 /* ========================================================================== */
 /* Hilfsfunktionen                                                            */
 /* ========================================================================== */
@@ -69,7 +64,8 @@ const app = document.getElementById('app');
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
-const roundToNearest25 = (v) => Math.round(v / 25) * 25;
+// Neue Rundung auf 50er Schritte
+const roundToNearest50 = (v) => Math.round(v / 50) * 50;
 
 /* ========================================================================== */
 /* Zustand                                                                    */
@@ -281,43 +277,24 @@ function updatePatternMessage(){
 }
 
 /* ========================================================================== */
-/* Angebotslogik (8–12 Runden)                                               */
+/* Angebotslogik – jede Runde prozentuale Senkung, immer nach unten          */
 /* ========================================================================== */
 
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev = Number(prevOffer);
   const m = Number(minPrice);
-  const r = Number(runde);
 
-  const applyPercentDown = () => {
-    const p = randomChoice(PERCENT_STEPS);
-    const raw = prev * (1 - p);
-    let rounded = roundToNearest25(raw);
-    return Math.max(m, Math.min(rounded, prev));
-  };
+  // Zufälligen Prozentsatz auswählen und anwenden
+  const p = randomChoice(PERCENT_STEPS);   // z.B. 0.02–0.03
+  const raw = prev * (1 - p);
 
-  const applyEuroDown = () => {
-    const step = randomChoice(EURO_STEPS);
-    const raw = prev - step;
-    let rounded = roundToNearest25(raw);
-    return Math.max(m, Math.min(rounded, prev));
-  };
+  // Auf 50er runden
+  let rounded = roundToNearest50(raw);
 
-  const applyPercentUp = () => {
-    const p = randomChoice(PERCENT_STEPS);
-    const raw = prev * (1 + p);
-    let rounded = roundToNearest25(raw);
-    return Math.min(state.initial_offer, Math.max(rounded, prev));
-  };
+  // Nicht unter Mindestpreis, und niemals höher als das vorige Angebot
+  const next = Math.max(m, Math.min(rounded, prev));
 
-  if (r <= 3) return applyPercentDown();
-  if (r >= 4 && r <= 6) {
-    if (state.hasUnacceptable) return applyPercentDown();
-    return applyEuroDown();
-  }
-  if (r === 7 || r === 8) return applyPercentUp();
-
-  return prev;
+  return next;
 }
 
 /* ========================================================================== */

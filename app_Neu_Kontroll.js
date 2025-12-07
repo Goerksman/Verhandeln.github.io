@@ -20,6 +20,33 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
   : Math.round(CONFIG.INITIAL_OFFER * CONFIG.MIN_PRICE_FACTOR);
 
 /* ========================================================================== */
+/* Spieler-ID / Probandencode initialisieren                                  */
+/* ========================================================================== */
+/* 
+   Falls player_id oder proband_code über die URL kommen (z.B. ?player_id=XYZ),
+   werden sie verwendet; sonst wird eine zufällige ID erzeugt.
+*/
+if (!window.playerId) {
+  const fromUrl =
+    Q.get('player_id') ||
+    Q.get('playerId') ||
+    Q.get('pid') ||
+    Q.get('id');
+
+  window.playerId = fromUrl || ('P_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+}
+
+if (!window.probandCode) {
+  const fromUrlCode =
+    Q.get('proband_code') ||
+    Q.get('probandCode') ||
+    Q.get('code');
+
+  // Fallback: proband_code = playerId
+  window.probandCode = fromUrlCode || window.playerId;
+}
+
+/* ========================================================================== */
 /* Konstanten                                                                 */
 /* ========================================================================== */
 const UNACCEPTABLE_LIMIT = 2250;
@@ -506,7 +533,7 @@ function handleSubmit(raw){
 
   /* ---------------------------------------------------------------------- */
   /* UNAKZEPTABLE ANGEBOTE (1500–<2250)                                     */
-/* ---------------------------------------------------------------------- */
+  /* ---------------------------------------------------------------------- */
   if (num < UNACCEPTABLE_LIMIT) {
 
     if (!state.hasCrossedThreshold) state.hasUnacceptable = true;

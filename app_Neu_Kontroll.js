@@ -51,6 +51,9 @@ if (!window.probandCode) {
 /* ========================================================================== */
 const UNACCEPTABLE_LIMIT = 2250;
 
+// absolute Schmerzgrenze für den Algorithmus
+const ABSOLUTE_FLOOR = 3500;
+
 const PERCENT_STEPS = [
   0.02, 0.021, 0.022, 0.023, 0.024, 0.025,
   0.026, 0.027, 0.028, 0.029, 0.03, 0.031, 
@@ -274,22 +277,24 @@ function updatePatternMessage(){
 }
 
 /* ========================================================================== */
-/* Angebotslogik – jede Runde prozentuale Senkung, immer nach unten          */
+/* Angebotslogik – jede Runde fixer Schritt von 167 € nach unten             */
 /* ========================================================================== */
 
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev = Number(prevOffer);
   const m = Number(minPrice);
 
-  // Zufälligen Prozentsatz auswählen und anwenden
-  const p = randomChoice(PERCENT_STEPS);   // z.B. 0.02–0.03
-  const raw = prev * (1 - p);
+  // Effektive Untergrenze: max(Konfig-Schmerzgrenze, absolute 3500 €)
+  const floor = Math.max(m, ABSOLUTE_FLOOR);
+
+  // Jede Runde exakt 167 € runter
+  const raw = prev - 167;
 
   // Auf 50er runden
   let rounded = roundToNearest50(raw);
 
-  // Nicht unter Mindestpreis, und niemals höher als das vorige Angebot
-  const next = Math.max(m, Math.min(rounded, prev));
+  // Nicht unter floor und niemals höher als das vorige Angebot
+  const next = Math.max(floor, Math.min(rounded, prev));
 
   return next;
 }
@@ -660,4 +665,3 @@ function viewFinish(accepted){
 /* ========================================================================== */
 
 viewVignette();
-

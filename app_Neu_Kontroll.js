@@ -307,8 +307,18 @@ function viewVignette(){
   app.innerHTML = `
     <h1>Designer-Verkaufsmesse</h1>
     <p class="muted">Stelle dir folgende Situation vor:</p>
-    <p>Du befindest dich auf einer <b>exklusiven Verkaufsmesse</b> …</p>
-    <p class="muted"><b>Hinweis:</b> Die Verhandlung dauert zufällig ${CONFIG.ROUNDS_MIN}–${CONFIG.ROUNDS_MAX} Runden.</p>
+    <p>
+      Ein Verkäufer bietet eine <b>hochwertige Designer-Ledercouch</b> auf einer Möbelmesse an.
+      Vergleichbare Sofas liegen zwischen <b>2.500 €</b> und <b>10.000 €</b>.
+    </p>
+    <p>
+      Du verhandelst über den Verkaufspreis, aber der Verkäufer besitzt eine klare Preisuntergrenze.
+    </p>
+    <p class="muted"> 
+      <b>Hinweis:</b> Die Verhandlung dauert zufällig ${CONFIG.ROUNDS_MIN}–${CONFIG.ROUNDS_MAX} Runden.
+      Dein Verhalten beeinflusst das <b>Abbruchrisiko</b>: unangemessen niedrige oder kaum veränderte
+      Angebote können zu einem vorzeitigen Abbruch führen.
+    </p>
     <div class="grid">
       <label class="consent">
         <input id="consent" type="checkbox" />
@@ -665,3 +675,4 @@ function viewFinish(accepted){
 /* ========================================================================== */
 
 viewVignette();
+

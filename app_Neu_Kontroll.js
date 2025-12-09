@@ -51,13 +51,47 @@ if (!window.probandCode) {
 /* ========================================================================== */
 const UNACCEPTABLE_LIMIT = 2250;
 
-// absolute Schmerzgrenze für den Algorithmus
+// absolute Schmerzgrenze (Basis), wird pro Dimension skaliert
 const ABSOLUTE_FLOOR = 3500;
+
+// Basiswerte für Startpreis und Schritt
+const BASE_INITIAL_OFFER = CONFIG.INITIAL_OFFER;
+const BASE_MIN_PRICE     = CONFIG.MIN_PRICE;
+const BASE_STEP_AMOUNT   = 167;
+
+/*
+   Drei Verhandlungs-Dimensionen:
+   1.0 → Basis
+   1.3 → alles × 1,3
+   1.5 → alles × 1,5
+
+   Pro "Spiel" wird eine Dimension genommen, bis alle drei einmal dran waren
+   (dann neue zufällige Reihenfolge).
+*/
+const DIMENSION_FACTORS = [1.0, 1.3, 1.5];
+let dimensionQueue = [];
+
+/* Queue für Dimensionsfaktoren zufällig mischen */
+function refillDimensionQueue() {
+  dimensionQueue = [...DIMENSION_FACTORS];
+  for (let i = dimensionQueue.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [dimensionQueue[i], dimensionQueue[j]] = [dimensionQueue[j], dimensionQueue[i]];
+  }
+}
+
+/* Nächsten Dimensionsfaktor holen (jede Option einmal, dann neu mischen) */
+function nextDimensionFactor() {
+  if (dimensionQueue.length === 0) {
+    refillDimensionQueue();
+  }
+  return dimensionQueue.pop();
+}
 
 const PERCENT_STEPS = [
   0.02, 0.021, 0.022, 0.023, 0.024, 0.025,
-  0.026, 0.027, 0.028, 0.029, 0.03, 0.031, 
-  0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 
+  0.026, 0.027, 0.028, 0.029, 0.03, 0.031,
+  0.032, 0.033, 0.034, 0.035, 0.036, 0.037,
   0.038, 0.039, 0.04
 ];
 
@@ -76,16 +110,36 @@ const roundToNearest50 = (v) => Math.round(v / 50) * 50;
 /* Zustand                                                                    */
 /* ========================================================================== */
 function newState(){
+  // 1) Dimensionsfaktor wählen (1.0, 1.3 oder 1.5)
+  const factor = nextDimensionFactor();
+
+  // 2) Startpreis skalieren & auf 50 runden
+  const initialRaw    = BASE_INITIAL_OFFER * factor;
+  const initialOffer  = roundToNearest50(initialRaw);
+
+  // 3) Mindestpreis + absolute Schmerzgrenze skalieren
+  const minConfigRaw  = BASE_MIN_PRICE * factor;
+  const absFloorRaw   = ABSOLUTE_FLOOR * factor;
+  const floorRaw      = Math.max(minConfigRaw, absFloorRaw);
+  const floorRounded  = roundToNearest50(floorRaw);
+
+  // 4) Schrittweite skalieren (linearer Abzug)
+  const stepAmount    = BASE_STEP_AMOUNT * factor;
+
   return {
     participant_id: crypto.randomUUID?.() || ('x_'+Date.now()+Math.random().toString(36).slice(2)),
     runde: 1,
     // Zufällige Rundenanzahl 8–12 (oder aus CONFIG)
     max_runden: randInt(CONFIG.ROUNDS_MIN, CONFIG.ROUNDS_MAX),
 
-    min_price: CONFIG.MIN_PRICE,
-    max_price: CONFIG.INITIAL_OFFER,
-    initial_offer: CONFIG.INITIAL_OFFER,
-    current_offer: CONFIG.INITIAL_OFFER,
+    // Merker für diese Verhandlung
+    scale_factor: factor,
+    step_amount: stepAmount,
+
+    min_price: floorRounded,
+    max_price: initialOffer,
+    initial_offer: initialOffer,
+    current_offer: initialOffer,
 
     history: [],
     last_concession: null,
@@ -107,6 +161,9 @@ function logRound(row) {
     participant_id: state.participant_id,
     player_id: window.playerId,
     proband_code: window.probandCode,
+
+    // optional: mitloggen, welche Dimension aktiv war
+    scale_factor: state.scale_factor,
 
     runde: row.runde,
     algo_offer: row.algo_offer,
@@ -277,20 +334,18 @@ function updatePatternMessage(){
 }
 
 /* ========================================================================== */
-/* Angebotslogik – jede Runde fixer Schritt von 167 € nach unten             */
+/* Angebotslogik – linearer Schritt, skaliert pro Dimension                  */
 /* ========================================================================== */
 
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
-  const prev = Number(prevOffer);
-  const m = Number(minPrice);
+  const prev  = Number(prevOffer);
+  const floor = Number(minPrice);
+  const step  = Number(state.step_amount || BASE_STEP_AMOUNT);
 
-  // Effektive Untergrenze: max(Konfig-Schmerzgrenze, absolute 3500 €)
-  const floor = Math.max(m, ABSOLUTE_FLOOR);
+  // jede Runde: fixer (skalierter) Betrag runter
+  const raw = prev - step;
 
-  // Jede Runde exakt 167 € runter
-  const raw = prev - 167;
-
-  // Auf 50er runden
+  // auf 50er runden
   let rounded = roundToNearest50(raw);
 
   // Nicht unter floor und niemals höher als das vorige Angebot
@@ -675,4 +730,3 @@ function viewFinish(accepted){
 /* ========================================================================== */
 
 viewVignette();
-

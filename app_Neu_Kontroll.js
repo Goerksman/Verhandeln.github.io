@@ -51,10 +51,13 @@ if (!window.probandCode) {
 /* ========================================================================== */
 const UNACCEPTABLE_LIMIT = 2250;
 
+// Basis für "extrem unverschämt" – wird pro Dimension skaliert
+const EXTREME_BASE = 1500;
+
 // absolute Schmerzgrenze (Basis), wird pro Dimension skaliert
 const ABSOLUTE_FLOOR = 3500;
 
-// Basiswerte für Startpreis und Schritt
+// Basiswerte für Startpreis, Mindestpreis-Faktor und Schritt
 const BASE_INITIAL_OFFER = CONFIG.INITIAL_OFFER;
 const BASE_MIN_PRICE     = CONFIG.MIN_PRICE;
 const BASE_STEP_AMOUNT   = 167;
@@ -71,7 +74,6 @@ const BASE_STEP_AMOUNT   = 167;
 const DIMENSION_FACTORS = [1.0, 1.3, 1.5];
 let dimensionQueue = [];
 
-/* Queue für Dimensionsfaktoren zufällig mischen */
 function refillDimensionQueue() {
   dimensionQueue = [...DIMENSION_FACTORS];
   for (let i = dimensionQueue.length - 1; i > 0; i--) {
@@ -80,7 +82,6 @@ function refillDimensionQueue() {
   }
 }
 
-/* Nächsten Dimensionsfaktor holen (jede Option einmal, dann neu mischen) */
 function nextDimensionFactor() {
   if (dimensionQueue.length === 0) {
     refillDimensionQueue();
@@ -162,7 +163,7 @@ function logRound(row) {
     player_id: window.playerId,
     proband_code: window.probandCode,
 
-    // optional: mitloggen, welche Dimension aktiv war
+    // mitloggen, welche Dimension aktiv war
     scale_factor: state.scale_factor,
 
     runde: row.runde,
@@ -188,55 +189,74 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
   if (!Number.isFinite(c)) return false;
 
+  const f = state.scale_factor || 1.0;
+
+  // 1) Sehr nah am aktuellen Angebot (±5 %) → akzeptieren
   const diff = Math.abs(prevOffer - c);
   if (diff <= prevOffer * 0.05) {
     return true;
   }
-  if (c >= CONFIG.ACCEPT_RANGE_MIN && c <= CONFIG.ACCEPT_RANGE_MAX) return true;
 
+  // 2) Fester Accept-Bereich, relativ zur Dimension (z.B. 4700–4800 skaliert)
+  const accMin = CONFIG.ACCEPT_RANGE_MIN * f;
+  const accMax = CONFIG.ACCEPT_RANGE_MAX * f;
+  if (c >= accMin && c <= accMax) return true;
+
+  // 3) Generelle Regel: innerhalb eines Margins zur Untergrenze / initial
   const margin = CONFIG.ACCEPT_MARGIN;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
 }
 
 /* ========================================================================== */
-/* Abbruchwahrscheinlichkeit                                                 */
+/* Abbruchwahrscheinlichkeit (skaliert nach Dimension)                       */
 /* ========================================================================== */
 
 function abortProbability(userOffer) {
+  const f = state.scale_factor || 1.0;
+
+  // Grenzen skaliert
+  const EXTREME = EXTREME_BASE * f;           // vorher 1500
+  const UNACC   = UNACCEPTABLE_LIMIT * f;     // vorher 2250
+  const T3000   = 3000 * f;
+  const T3700   = 3700 * f;
+  const T4000   = 4000 * f;
+
   let chance = 0;
 
   // 1) Extrem unverschämte Angebote sofort sehr riskant
-  if (userOffer < 1500) return 100;
+  if (userOffer < EXTREME) return 100;
 
-  // 2) Angebote <2250 erhöhen Risiko stark
-  if (userOffer < UNACCEPTABLE_LIMIT) {
+  // 2) Angebote < UNACC erhöhen Risiko stark
+  if (userOffer < UNACC) {
     chance += randInt(20, 40);
   }
 
-  // 3) Bereich 2250–3000 → kleine Schritte gefährlich
+  // 3) Bereich UNACC–T3000 → kleine Schritte gefährlich
   const last = state.history[state.history.length - 1];
-  if (userOffer >= UNACCEPTABLE_LIMIT && userOffer < 3000) {
+  if (userOffer >= UNACC && userOffer < T3000) {
     if (last && last.proband_counter != null) {
       const diff = Math.abs(userOffer - Number(last.proband_counter));
-      if (diff < 100) {
+
+      // "kleiner Schritt" skaliert mit der Dimension (Basis: 100 €)
+      if (diff < 100 * f) {
         chance += randInt(10, 25);
       }
     }
   }
 
-  // 4) Bereich 3000–3700 → leichte Zufallswahrscheinlichkeit
-  if (userOffer >= 3000 && userOffer < 3700) {
+  // 4) Bereich T3000–T3700 → leichte Zufallswahrscheinlichkeit
+  if (userOffer >= T3000 && userOffer < T3700) {
     chance += randInt(1, 7);
   }
 
-  // 5) Bereich 3700–4000 → kaum Risiko
-  if (userOffer >= 3700 && userOffer < 4000) {
+  // 5) Bereich T3700–T4000 → kaum Risiko
+  if (userOffer >= T3700 && userOffer < T4000) {
     chance += randInt(0, 3);
   }
 
-  // 6) Ab 4000 → diff-Regel entfällt, Risiko nur minimal
-  if (userOffer >= 4000) {
+  // 6) Ab T4000 → Risiko nur minimal
+  if (userOffer >= T4000) {
     chance += randInt(0, 2);
   }
 
@@ -281,24 +301,35 @@ function maybeAbort(userOffer) {
 }
 
 /* ========================================================================== */
-/* Mustererkennung                                                            */
+/* Mustererkennung – an Dimension angepasst                                   */
 /* ========================================================================== */
 
 function getThresholdForAmount(prev){
-  if (prev >= 2250 && prev < 3000) return 0.05;
-  if (prev >= 3000 && prev < 4000) return 0.04;
-  if (prev >= 4000 && prev < 5000) return 0.03;
+  const f = state.scale_factor || 1.0;
+
+  // Bereichsgrenzen skaliert
+  const A = 2250 * f;
+  const B = 3000 * f;
+  const C = 4000 * f;
+  const D = 5000 * f;
+
+  if (prev >= A && prev < B) return 0.05;
+  if (prev >= B && prev < C) return 0.04;
+  if (prev >= C && prev < D) return 0.03;
   return null;
 }
 
 function updatePatternMessage(){
+  const f = state.scale_factor || 1.0;
+  const limit = UNACCEPTABLE_LIMIT * f; // vorher: fixer 2250-Wert
+
   const counters = [];
   for (let h of state.history) {
     let c = h.proband_counter;
     if (c == null || c === '') continue;
     c = Number(c);
     if (!Number.isFinite(c)) continue;
-    if (c < UNACCEPTABLE_LIMIT) continue;
+    if (c < limit) continue;        // jetzt dimensionsabhängig
     counters.push(c);
   }
   if (counters.length < 3) {
@@ -523,6 +554,8 @@ function handleSubmit(raw){
   }
 
   const prevOffer = state.current_offer;
+  const f = state.scale_factor || 1.0;
+  const extremeThreshold = EXTREME_BASE * f;   // z.B. 1500, 1950, 2250
 
   /* ---------------------------------------------------------------------- */
   /* AUTO-ACCEPT                                                            */
@@ -552,9 +585,9 @@ function handleSubmit(raw){
   }
 
   /* ---------------------------------------------------------------------- */
-  /* EXTREM UNAKZEPTABLE ANGEBOTE (<1500) → Sofortiger Abbruch              */
+  /* EXTREM UNAKZEPTABLE ANGEBOTE (< 1500*f) → Sofortiger Abbruch           */
   /* ---------------------------------------------------------------------- */
-  if (num < 1500) {
+  if (num < extremeThreshold) {
 
     state.history.push({
       runde: state.runde,
@@ -580,7 +613,7 @@ function handleSubmit(raw){
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Normale (>=1500) Angebote – alles läuft über Abbruchwahrscheinlichkeit */
+  /* Normale (>= 1500*f) Angebote – alles läuft über Abbruchwahrscheinlichkeit */
   /* ---------------------------------------------------------------------- */
 
   // Abbruchwahrscheinlichkeit prüfen (kann sofort beenden)

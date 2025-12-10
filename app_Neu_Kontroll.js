@@ -60,7 +60,9 @@ const ABSOLUTE_FLOOR = 3500;
 // Basiswerte für Startpreis, Mindestpreis-Faktor und Schritt
 const BASE_INITIAL_OFFER = CONFIG.INITIAL_OFFER;
 const BASE_MIN_PRICE     = CONFIG.MIN_PRICE;
-const BASE_STEP_AMOUNT   = 167;
+
+// *** NEU: Basis-Schrittweite auf 500 € gesetzt ***
+const BASE_STEP_AMOUNT   = 500;
 
 /*
    Drei Verhandlungs-Dimensionen:
@@ -118,11 +120,11 @@ function newState(){
   const initialRaw    = BASE_INITIAL_OFFER * factor;
   const initialOffer  = roundToNearest50(initialRaw);
 
-  // 3) Mindestpreis + absolute Schmerzgrenze skalieren
-  const minConfigRaw  = BASE_MIN_PRICE * factor;
+  // 3) Schmerzgrenze (Basis 3.500 €) skaliert
+  //    → Mit BASE_STEP_AMOUNT = 500 erreicht der Algorithmus diese Grenze
+  //      nach 4 Schritten und bleibt dann dort.
   const absFloorRaw   = ABSOLUTE_FLOOR * factor;
-  const floorRaw      = Math.max(minConfigRaw, absFloorRaw);
-  const floorRounded  = roundToNearest50(floorRaw);
+  const floorRounded  = roundToNearest50(absFloorRaw);
 
   // 4) Schrittweite skalieren (linearer Abzug)
   const stepAmount    = BASE_STEP_AMOUNT * factor;

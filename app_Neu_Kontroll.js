@@ -61,7 +61,7 @@ const ABSOLUTE_FLOOR = 3500;
 const BASE_INITIAL_OFFER = CONFIG.INITIAL_OFFER;
 const BASE_MIN_PRICE     = CONFIG.MIN_PRICE;
 
-// *** NEU: Basis-Schrittweite auf 500 € gesetzt ***
+// NEU: Basis-Schrittweite auf 500 € gesetzt
 const BASE_STEP_AMOUNT   = 500;
 
 /*
@@ -151,7 +151,10 @@ function newState(){
 
     patternMessage: '',
     deal_price: null,
-    finish_reason: null
+    finish_reason: null,
+
+    // NEU: hier wird die zuletzt intern berechnete Abbruchwahrscheinlichkeit gespeichert
+    last_abort_chance: null
   };
 }
 let state = newState();
@@ -270,6 +273,10 @@ function abortProbability(userOffer) {
 
 function maybeAbort(userOffer) {
   const chance = abortProbability(userOffer);
+
+  // NEU: exakt diesen Wert merken, damit er im UI angezeigt werden kann
+  state.last_abort_chance = chance;
+
   const roll = randInt(1, 100);
 
   if (roll <= chance) {
@@ -476,10 +483,16 @@ function viewAbort(chance){
 /* ========================================================================== */
 
 function viewNegotiate(errorMsg){
-  const abortChance = abortProbability(state.current_offer);
+  // NEU: Anzeige verwendet genau die zuletzt intern berechnete Abbruchwahrscheinlichkeit
+  const abortChance = (typeof state.last_abort_chance === 'number')
+    ? state.last_abort_chance
+    : null;
+
   let color = '#16a34a';
-  if (abortChance > 50) color = '#ea580c';
-  else if (abortChance > 25) color = '#eab308';
+  if (abortChance !== null) {
+    if (abortChance > 50) color = '#ea580c';
+    else if (abortChance > 25) color = '#eab308';
+  }
 
   app.innerHTML = `
     <h1>Verkaufsverhandlung</h1>
@@ -498,7 +511,9 @@ function viewNegotiate(errorMsg){
         border-radius:8px;
         margin-bottom:10px;">
         <b style="color:${color};">Abbruchwahrscheinlichkeit:</b>
-        <span style="color:${color}; font-weight:600;">${abortChance}%</span>
+        <span style="color:${color}; font-weight:600;">
+          ${abortChance !== null ? abortChance + '%' : '--'}
+        </span>
       </div>
 
       <label for="counter">Dein Gegenangebot (€)</label>
@@ -590,6 +605,9 @@ function handleSubmit(raw){
   /* EXTREM UNAKZEPTABLE ANGEBOTE (< 1500*f) → Sofortiger Abbruch           */
   /* ---------------------------------------------------------------------- */
   if (num < extremeThreshold) {
+
+    // NEU: auch hier klar definierte Abbruchwahrscheinlichkeit
+    state.last_abort_chance = 100;
 
     state.history.push({
       runde: state.runde,

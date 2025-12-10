@@ -22,10 +22,6 @@ CONFIG.MIN_PRICE = Number.isFinite(CONFIG.MIN_PRICE)
 /* ========================================================================== */
 /* Spieler-ID / Probandencode initialisieren                                  */
 /* ========================================================================== */
-/*
-   Falls player_id oder proband_code über die URL kommen (z.B. ?player_id=XYZ),
-   werden sie verwendet; sonst wird eine zufällige ID erzeugt.
-*/
 if (!window.playerId) {
   const fromUrl =
     Q.get('player_id') ||
@@ -42,7 +38,6 @@ if (!window.probandCode) {
     Q.get('probandCode') ||
     Q.get('code');
 
-  // Fallback: proband_code = playerId
   window.probandCode = fromUrlCode || window.playerId;
 }
 
@@ -50,28 +45,14 @@ if (!window.probandCode) {
 /* Konstanten                                                                 */
 /* ========================================================================== */
 const UNACCEPTABLE_LIMIT = 2250;
-
-// Basis für "extrem unverschämt" – wird pro Dimension skaliert
 const EXTREME_BASE = 1500;
-
-// absolute Schmerzgrenze (Basis), wird pro Dimension skaliert
 const ABSOLUTE_FLOOR = 3500;
-
-// Basiswerte für Startpreis, Mindestpreis-Faktor und Schritt
 const BASE_INITIAL_OFFER = CONFIG.INITIAL_OFFER;
-const BASE_MIN_PRICE     = CONFIG.MIN_PRICE;
-
-// NEU: Basis-Schrittweite auf 500 € gesetzt
-const BASE_STEP_AMOUNT   = 500;
+const BASE_MIN_PRICE = CONFIG.MIN_PRICE;
+const BASE_STEP_AMOUNT = 500;
 
 /*
    Drei Verhandlungs-Dimensionen:
-   1.0 → Basis
-   1.3 → alles × 1,3
-   1.5 → alles × 1,5
-
-   Pro "Spiel" wird eine Dimension genommen, bis alle drei einmal dran waren
-   (dann neue zufällige Reihenfolge).
 */
 const DIMENSION_FACTORS = [1.0, 1.3, 1.5];
 let dimensionQueue = [];
@@ -102,75 +83,56 @@ const PERCENT_STEPS = [
 /* Hilfsfunktionen                                                            */
 /* ========================================================================== */
 const app = document.getElementById('app');
-
 const randInt = (a,b) => Math.floor(a + Math.random()*(b-a+1));
 const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(n);
 const randomChoice = (arr) => arr[randInt(0, arr.length - 1)];
-// Rundung auf 50er Schritte
 const roundToNearest50 = (v) => Math.round(v / 50) * 50;
 
 /* ========================================================================== */
 /* Zustand                                                                    */
 /* ========================================================================== */
 function newState(){
-  // 1) Dimensionsfaktor wählen (1.0, 1.3 oder 1.5)
   const factor = nextDimensionFactor();
 
-  // 2) Startpreis skalieren & auf 50 runden
-  const initialRaw    = BASE_INITIAL_OFFER * factor;
-  const initialOffer  = roundToNearest50(initialRaw);
+  const initialRaw = BASE_INITIAL_OFFER * factor;
+  const initialOffer = roundToNearest50(initialRaw);
 
-  // 3) Schmerzgrenze (Basis 3.500 €) skaliert
-  //    → Mit BASE_STEP_AMOUNT = 500 erreicht der Algorithmus diese Grenze
-  //      nach 4 Schritten und bleibt dann dort.
-  const absFloorRaw   = ABSOLUTE_FLOOR * factor;
-  const floorRounded  = roundToNearest50(absFloorRaw);
+  const absFloorRaw = ABSOLUTE_FLOOR * factor;
+  const floorRounded = roundToNearest50(absFloorRaw);
 
-  // 4) Schrittweite skalieren (linearer Abzug)
-  const stepAmount    = BASE_STEP_AMOUNT * factor;
+  const stepAmount = BASE_STEP_AMOUNT * factor;
 
   return {
     participant_id: crypto.randomUUID?.() || ('x_'+Date.now()+Math.random().toString(36).slice(2)),
     runde: 1,
-    // Zufällige Rundenanzahl 8–12 (oder aus CONFIG)
     max_runden: randInt(CONFIG.ROUNDS_MIN, CONFIG.ROUNDS_MAX),
-
-    // Merker für diese Verhandlung
     scale_factor: factor,
     step_amount: stepAmount,
-
     min_price: floorRounded,
     max_price: initialOffer,
     initial_offer: initialOffer,
     current_offer: initialOffer,
-
     history: [],
     last_concession: null,
     finished: false,
     accepted: false,
-
     patternMessage: '',
     deal_price: null,
     finish_reason: null,
-
-    // NEU: hier wird die zuletzt intern berechnete Abbruchwahrscheinlichkeit gespeichert
     last_abort_chance: null
   };
 }
 let state = newState();
 
 /* ========================================================================== */
-/* Logging – exakt wie beim Gruppenpartner                                   */
+/* Logging                                                                    */
 /* ========================================================================== */
 function logRound(row) {
   const payload = {
     participant_id: state.participant_id,
     player_id: window.playerId,
     proband_code: window.probandCode,
-
-    // mitloggen, welche Dimension aktiv war
     scale_factor: state.scale_factor,
-
     runde: row.runde,
     algo_offer: row.algo_offer,
     proband_counter: row.proband_counter,
@@ -187,101 +149,64 @@ function logRound(row) {
 }
 
 /* ========================================================================== */
-/* Auto-Accept-Regeln                                                        */
+/* Auto-Accept                                                                */
 /* ========================================================================== */
-
 function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
   const c = Number(counter);
   if (!Number.isFinite(c)) return false;
 
   const f = state.scale_factor || 1.0;
 
-  // 1) Sehr nah am aktuellen Angebot (±5 %) → akzeptieren
   const diff = Math.abs(prevOffer - c);
-  if (diff <= prevOffer * 0.05) {
-    return true;
-  }
+  if (diff <= prevOffer * 0.05) return true;
 
-  // 2) Fester Accept-Bereich, relativ zur Dimension (z.B. 4700–4800 skaliert)
   const accMin = CONFIG.ACCEPT_RANGE_MIN * f;
   const accMax = CONFIG.ACCEPT_RANGE_MAX * f;
   if (c >= accMin && c <= accMax) return true;
 
-  // 3) Generelle Regel: innerhalb eines Margins zur Untergrenze / initial
   const margin = CONFIG.ACCEPT_MARGIN;
   const threshold = Math.max(minPrice, initialOffer * (1 - margin));
   return c >= threshold;
 }
 
 /* ========================================================================== */
-/* Abbruchwahrscheinlichkeit (skaliert nach Dimension)                       */
+/* NEUE ABBRUCHWAHRSCHEINLICHKEIT (nur Differenz)                             */
 /* ========================================================================== */
-
 function abortProbability(userOffer) {
-  const f = state.scale_factor || 1.0;
 
-  // Grenzen skaliert
-  const EXTREME = EXTREME_BASE * f;           // vorher 1500
-  const UNACC   = UNACCEPTABLE_LIMIT * f;     // vorher 2250
-  const T3000   = 3000 * f;
-  const T3700   = 3700 * f;
-  const T4000   = 4000 * f;
+  const f = state.scale_factor || 1.0;
+  const seller = state.current_offer;
+  const buyer  = Number(userOffer);
+  const diff = Math.abs(seller - buyer);
+
+  if (buyer < 1500 * f) return 100;
 
   let chance = 0;
 
-  // 1) Extrem unverschämte Angebote sofort sehr riskant
-  if (userOffer < EXTREME) return 100;
+  if (diff >= 1000 * f)      chance = 60;
+  else if (diff >= 750 * f)  chance = 45;
+  else if (diff >= 500 * f)  chance = 30;
+  else if (diff >= 250 * f)  chance = 15;
+  else if (diff >= 100 * f)  chance = 8;
+  else                       chance = 2;
 
-  // 2) Angebote < UNACC erhöhen Risiko stark
-  if (userOffer < UNACC) {
-    chance += randInt(20, 40);
-  }
+  chance += state.runde * 1.5;
 
-  // 3) Bereich UNACC–T3000 → kleine Schritte gefährlich
-  const last = state.history[state.history.length - 1];
-  if (userOffer >= UNACC && userOffer < T3000) {
-    if (last && last.proband_counter != null) {
-      const diff = Math.abs(userOffer - Number(last.proband_counter));
-
-      // "kleiner Schritt" skaliert mit der Dimension (Basis: 100 €)
-      if (diff < 100 * f) {
-        chance += randInt(10, 25);
-      }
-    }
-  }
-
-  // 4) Bereich T3000–T3700 → leichte Zufallswahrscheinlichkeit
-  if (userOffer >= T3000 && userOffer < T3700) {
-    chance += randInt(1, 7);
-  }
-
-  // 5) Bereich T3700–T4000 → kaum Risiko
-  if (userOffer >= T3700 && userOffer < T4000) {
-    chance += randInt(0, 3);
-  }
-
-  // 6) Ab T4000 → Risiko nur minimal
-  if (userOffer >= T4000) {
-    chance += randInt(0, 2);
-  }
-
-  // 7) Pro Runde steigt Risiko leicht
-  chance += state.runde * 2;
-
-  return Math.min(chance, 75);
+  return Math.min(100, Math.round(chance));
 }
 
+/* ========================================================================== */
+/* NEU: maybeAbort nutzt neue Risiko-Logik                                    */
+/* ========================================================================== */
 function maybeAbort(userOffer) {
-  const chance = abortProbability(userOffer);
 
-  // NEU: exakt diesen Wert merken, damit er im UI angezeigt werden kann
+  const chance = abortProbability(userOffer);
   state.last_abort_chance = chance;
 
-  const roll = randInt(1, 100);
+  const roll = randInt(1,100);
 
   if (roll <= chance) {
 
-    // Logging des Abbruchs
     logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
@@ -291,7 +216,6 @@ function maybeAbort(userOffer) {
       deal_price: ''
     });
 
-    // Letzte Aktion in den Verlauf schreiben
     state.history.push({
       runde: state.runde,
       algo_offer: state.current_offer,
@@ -306,17 +230,16 @@ function maybeAbort(userOffer) {
     viewAbort(chance);
     return true;
   }
+
   return false;
 }
 
 /* ========================================================================== */
-/* Mustererkennung – an Dimension angepasst                                   */
+/* Mustererkennung                                                            */
 /* ========================================================================== */
-
 function getThresholdForAmount(prev){
   const f = state.scale_factor || 1.0;
 
-  // Bereichsgrenzen skaliert
   const A = 2250 * f;
   const B = 3000 * f;
   const C = 4000 * f;
@@ -330,7 +253,7 @@ function getThresholdForAmount(prev){
 
 function updatePatternMessage(){
   const f = state.scale_factor || 1.0;
-  const limit = UNACCEPTABLE_LIMIT * f; // vorher: fixer 2250-Wert
+  const limit = UNACCEPTABLE_LIMIT * f;
 
   const counters = [];
   for (let h of state.history) {
@@ -338,7 +261,7 @@ function updatePatternMessage(){
     if (c == null || c === '') continue;
     c = Number(c);
     if (!Number.isFinite(c)) continue;
-    if (c < limit) continue;        // jetzt dimensionsabhängig
+    if (c < limit) continue;
     counters.push(c);
   }
   if (counters.length < 3) {
@@ -374,30 +297,24 @@ function updatePatternMessage(){
 }
 
 /* ========================================================================== */
-/* Angebotslogik – linearer Schritt, skaliert pro Dimension                  */
+/* Angebotslogik (linear, skaliert)                                           */
 /* ========================================================================== */
-
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev  = Number(prevOffer);
   const floor = Number(minPrice);
   const step  = Number(state.step_amount || BASE_STEP_AMOUNT);
 
-  // jede Runde: fixer (skalierter) Betrag runter
   const raw = prev - step;
-
-  // auf 50er runden
   let rounded = roundToNearest50(raw);
 
-  // Nicht unter floor und niemals höher als das vorige Angebot
   const next = Math.max(floor, Math.min(rounded, prev));
 
   return next;
 }
 
 /* ========================================================================== */
-/* Rendering-Funktionen                                                       */
+/* Rendering: Vignette, Think, History                                       */
 /* ========================================================================== */
-
 function viewVignette(){
   app.innerHTML = `
     <h1>Designer-Verkaufsmesse</h1>
@@ -456,7 +373,6 @@ function historyTable(){
 /* ========================================================================== */
 /* Abbruch-Screen                                                             */
 /* ========================================================================== */
-
 function viewAbort(chance){
   app.innerHTML = `
     <h1>Verhandlung abgebrochen</h1>
@@ -481,9 +397,8 @@ function viewAbort(chance){
 /* ========================================================================== */
 /* Hauptscreen der Verhandlung                                                */
 /* ========================================================================== */
-
 function viewNegotiate(errorMsg){
-  // NEU: Anzeige verwendet genau die zuletzt intern berechnete Abbruchwahrscheinlichkeit
+
   const abortChance = (typeof state.last_abort_chance === 'number')
     ? state.last_abort_chance
     : null;
@@ -536,6 +451,7 @@ function viewNegotiate(errorMsg){
   inputEl.onkeydown = e => { if (e.key === "Enter") handleSubmit(inputEl.value); };
 
   document.getElementById('acceptBtn').onclick = () => {
+
     state.history.push({
       runde: state.runde,
       algo_offer: state.current_offer,
@@ -560,9 +476,8 @@ function viewNegotiate(errorMsg){
 }
 
 /* ========================================================================== */
-/* Handle Submit – zentrale Round-by-Round-Logik + Logging                    */
+/* Handle Submit – zentrale Logik                                             */
 /* ========================================================================== */
-
 function handleSubmit(raw){
   const val = raw.trim().replace(',','.');
   const num = Number(val);
@@ -572,41 +487,11 @@ function handleSubmit(raw){
 
   const prevOffer = state.current_offer;
   const f = state.scale_factor || 1.0;
-  const extremeThreshold = EXTREME_BASE * f;   // z.B. 1500, 1950, 2250
+  const extremeThreshold = EXTREME_BASE * f;
 
-  /* ---------------------------------------------------------------------- */
-  /* AUTO-ACCEPT                                                            */
-  /* ---------------------------------------------------------------------- */
-  if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
-
-    state.history.push({
-      runde: state.runde,
-      algo_offer: prevOffer,
-      proband_counter: num,
-      accepted: true
-    });
-
-    logRound({
-      runde: state.runde,
-      algo_offer: prevOffer,
-      proband_counter: num,
-      accepted: true,
-      finished: true,
-      deal_price: num
-    });
-
-    state.accepted = true;
-    state.finished = true;
-    state.deal_price = num;
-    return viewThink(() => viewFinish(true));
-  }
-
-  /* ---------------------------------------------------------------------- */
-  /* EXTREM UNAKZEPTABLE ANGEBOTE (< 1500*f) → Sofortiger Abbruch           */
-  /* ---------------------------------------------------------------------- */
+  /* Sofortabbruch unter 1500*f */
   if (num < extremeThreshold) {
 
-    // NEU: auch hier klar definierte Abbruchwahrscheinlichkeit
     state.last_abort_chance = 100;
 
     state.history.push({
@@ -632,14 +517,33 @@ function handleSubmit(raw){
     return viewAbort(100);
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* Normale (>= 1500*f) Angebote – alles läuft über Abbruchwahrscheinlichkeit */
-  /* ---------------------------------------------------------------------- */
+  /* Auto-Accept */
+  if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
 
-  // Abbruchwahrscheinlichkeit prüfen (kann sofort beenden)
-  if (maybeAbort(num)) {
-    return;
+    state.history.push({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: true
+    });
+
+    logRound({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: true,
+      finished: true,
+      deal_price: num
+    });
+
+    state.accepted = true;
+    state.finished = true;
+    state.deal_price = num;
+    return viewThink(() => viewFinish(true));
   }
+
+  /* Neue Abbruchwahrscheinlichkeit */
+  if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
   const concession = prevOffer - next;
@@ -676,9 +580,8 @@ function handleSubmit(raw){
 }
 
 /* ========================================================================== */
-/* Entscheidung – letzte Runde                                                */
+/* Entscheidung letzte Runde                                                  */
 /* ========================================================================== */
-
 function viewDecision(){
   app.innerHTML = `
     <h1>Letzte Runde</h1>
@@ -744,9 +647,8 @@ function viewDecision(){
 }
 
 /* ========================================================================== */
-/* Finish-Screen                                                              */
+/* Finish Screen                                                              */
 /* ========================================================================== */
-
 function viewFinish(accepted){
   const dealPrice = state.deal_price ?? state.current_offer;
 
@@ -781,5 +683,4 @@ function viewFinish(accepted){
 /* ========================================================================== */
 /* Start                                                                      */
 /* ========================================================================== */
-
 viewVignette();

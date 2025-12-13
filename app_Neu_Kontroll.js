@@ -326,7 +326,7 @@ function viewVignette(){
     <p>
       Ein Verkäufer bietet eine <b>hochwertige Designer-Ledercouch</b> auf einer Möbelmesse an.
       Solche Möbel werden üblicherweise im <b>gehobenen Preissegment €</b> gehandelt, da sie aus wertvollem 
-      Material bestehen und in der Regel Einzelstücke sind.  
+      Material bestehen und in der Regel Einzelstücke sind. Den Rahmen des Preises siehst du in der Verhandlung. 
     </p>
     <p>
       Du verhandelst mit dem Verkäufer über den endgültigen Verkaufspreis. 
@@ -746,6 +746,7 @@ function viewFinish(accepted){
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+
 
 
 

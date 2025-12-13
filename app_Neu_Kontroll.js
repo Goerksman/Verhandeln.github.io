@@ -117,6 +117,7 @@ function newState(){
     finished: false,
     accepted: false,
     patternMessage: '',
+    warningRounds: 0,       // neu: für Klein-Schritt-Muster
     deal_price: null,
     finish_reason: null,
     last_abort_chance: null
@@ -196,7 +197,7 @@ function abortProbability(userOffer) {
 }
 
 /* ========================================================================== */
-/* NEU: maybeAbort nutzt neue Risiko-Logik                                    */
+/* maybeAbort nutzt neue Risiko-Logik                                         */
 /* ========================================================================== */
 function maybeAbort(userOffer) {
 
@@ -266,6 +267,7 @@ function updatePatternMessage(){
   }
   if (counters.length < 3) {
     state.patternMessage = '';
+    state.warningRounds = 0;
     return;
   }
   let chainLen = 1;
@@ -291,8 +293,10 @@ function updatePatternMessage(){
   if (chainLen >= 3) {
     state.patternMessage =
       'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung.';
+    state.warningRounds = chainLen;   // Anzahl erkannter „kleiner Schritt“-Runden
   } else {
     state.patternMessage = '';
+    state.warningRounds = 0;
   }
 }
 
@@ -454,6 +458,8 @@ function viewNegotiate(errorMsg){
         </span>
       </div>
 
+      ${state.patternMessage ? `<p class="info">${state.patternMessage}</p>` : ''}
+
       <label for="counter">Dein Gegenangebot (€)</label>
       <div class="row">
         <input id="counter" type="number" step="0.01" min="0" />
@@ -464,7 +470,6 @@ function viewNegotiate(errorMsg){
     </div>
 
     ${historyTable()}
-    ${state.patternMessage ? `<p class="info">${state.patternMessage}</p>` : ''}
     ${errorMsg ? `<p class="error">${errorMsg}</p>` : ''}
   `;
 
@@ -502,10 +507,21 @@ function viewNegotiate(errorMsg){
 /* Handle Submit – zentrale Logik                                             */
 /* ========================================================================== */
 function handleSubmit(raw){
-  const val = raw.trim().replace(',','.');
+  const val = String(raw ?? '').trim().replace(',','.');
   const num = Number(val);
   if (!Number.isFinite(num) || num < 0){
     return viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.');
+  }
+
+  // NEU: kein niedrigeres Gegenangebot als in der Vorrunde
+  const last = state.history[state.history.length - 1];
+  if (last && last.proband_counter != null && last.proband_counter !== '') {
+    const lastBuyer = Number(last.proband_counter);
+    if (Number.isFinite(lastBuyer) && num < lastBuyer) {
+      return viewNegotiate(
+        `Dein Gegenangebot darf nicht niedriger sein als in der Vorrunde (${eur(lastBuyer)}).`
+      );
+    }
   }
 
   const prevOffer = state.current_offer;
@@ -540,7 +556,7 @@ function handleSubmit(raw){
     return viewAbort(100);
   }
 
-  /* Auto-Accept */
+  /* Auto-Accept (Verhandlungsstil unverändert) */
   if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
 
     state.history.push({
@@ -565,7 +581,7 @@ function handleSubmit(raw){
     return viewThink(() => viewFinish(true));
   }
 
-  /* Neue Abbruchwahrscheinlichkeit */
+  /* Neue Abbruchwahrscheinlichkeit (Risiko-Logik unverändert) */
   if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
@@ -587,6 +603,7 @@ function handleSubmit(raw){
     accepted: false
   });
 
+  // Pattern-Erkennung aktualisieren (Warntext, warningRounds)
   updatePatternMessage();
 
   state.current_offer = next;
@@ -611,7 +628,7 @@ function viewDecision(){
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
 
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
-      <strong>Letztes Angebot:</strong> ${eur(state.current_offer)}
+      <strong>Letztes Angebot:</strong> ${eur(state.current_offer)}</strong>
     </div>
 
     <button id="takeBtn">Annehmen</button>
@@ -729,5 +746,6 @@ function viewFinish(accepted){
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+
 
 

@@ -290,7 +290,7 @@ function updatePatternMessage(){
   }
   if (chainLen >= 3) {
     state.patternMessage =
-      'Mit solchen kleinen Erhöhungen wird das schwierig. Geh bitte ein Stück näher an deine Schmerzgrenze, dann finden wir bestimmt schneller einen fairen Deal.';
+      'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung. Bitte bewege dich ein Stück näher an deine tatsächliche Preisvorstellung, damit wir schneller zu einem fairen Abschluss kommen können.';
   } else {
     state.patternMessage = '';
   }
@@ -321,10 +321,11 @@ function viewVignette(){
     <p class="muted">Stelle dir folgende Situation vor:</p>
     <p>
       Ein Verkäufer bietet eine <b>hochwertige Designer-Ledercouch</b> auf einer Möbelmesse an.
-      Vergleichbare Sofas liegen zwischen <b>2.500 €</b> und <b>10.000 €</b>.
+      Solche Möbel werden üblicherweise im <b>gehobenen Preissegment €</b> gehandelt, da sie aus wertvollem 
+      Material bestehen und in der Regel Einzelstücke sind.  
     </p>
     <p>
-      Du verhandelst über den Verkaufspreis, aber der Verkäufer besitzt eine klare Preisuntergrenze.
+      Du verhandelst mit dem Verkäufer über den endgültigen Verkaufspreis. 
     </p>
     <p class="muted"> 
       <b>Hinweis:</b> Die Verhandlung dauert zufällig ${CONFIG.ROUNDS_MIN}–${CONFIG.ROUNDS_MAX} Runden.
@@ -379,7 +380,7 @@ function viewAbort(chance){
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
 
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
-      <strong>Die Verkäuferseite hat die Verhandlung beendet.</strong>
+      <strong>Die Verkäuferseite hat die Verhandlung beendet, da er mit Ihrem Gegenangebot nicht zufrieden war.</strong>
       <p class="muted" style="margin-top:8px;">Abbruchwahrscheinlichkeit in dieser Runde: ${chance}%</p>
     </div>
 
@@ -728,3 +729,4 @@ function viewFinish(accepted){
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+

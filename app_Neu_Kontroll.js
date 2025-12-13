@@ -290,7 +290,7 @@ function updatePatternMessage(){
   }
   if (chainLen >= 3) {
     state.patternMessage =
-      'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung. Bitte bewege dich ein Stück näher an deine tatsächliche Preisvorstellung, damit wir schneller zu einem fairen Abschluss kommen können.';
+      'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung.';
   } else {
     state.patternMessage = '';
   }
@@ -729,4 +729,5 @@ function viewFinish(accepted){
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+
 

@@ -170,7 +170,7 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
 
 /* ========================================================================== */
 /* Abbruchkomponenten (Basis + Warnaufschlag)                                 */
-/* - Differenz 3000 × Multiplikator → Basis 20 %                              */
+/* - Differenz 3000 × Multiplikator → Basis 25 %                              */
 /* - Unter 1500 × Multiplikator: Basiswert 100 %                              */
 /* - Bei aktivem Warnhinweis: +2 % pro Warnrunde                              */
 /* - Wenn Warnung aktiv ist, sinkt die Gesamtwahrscheinlichkeit nicht         */
@@ -190,8 +190,8 @@ function computeAbortComponents(userOffer) {
     base = 100;
   } else {
     const diff = Math.abs(seller - buyer);
-    // 3000 × Multiplikator → 20 %
-    base = (diff / (3000 * f)) * 20;
+    // 3000 × Multiplikator → 25 %
+    base = (diff / (3000 * f)) * 25;
   }
 
   if (base < 0) base = 0;
@@ -461,11 +461,11 @@ function viewNegotiate(errorMsg){
   const { base, extra, total } = computeAbortComponents(displayBuyer);
   state.last_abort_chance = total;
 
-  // Farbskala passend zu 0–20–40+ %
+  // Farbskala passend zu 0–25–40+ %
   let color = '#16a34a'; // grün
   if (total > 40) {
     color = '#dc2626';   // rot
-  } else if (total > 20) {
+  } else if (total > 25) {
     color = '#eab308';   // gelb
   }
 

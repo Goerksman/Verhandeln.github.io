@@ -144,7 +144,11 @@ function logRound(row) {
     proband_counter: row.proband_counter,
     accepted: row.accepted,
     finished: row.finished,
-    deal_price: row.deal_price
+    deal_price: row.deal_price,
+
+    // NEU: Abbruch-Flags
+    proband_exit: row.proband_exit ?? '',
+    algo_exit: row.algo_exit ?? ''
   };
 
   if (window.sendRow) {
@@ -340,14 +344,18 @@ function maybeAbort(userOffer) {
 
   const roll = randInt(1, 100);
   if (roll <= totalChance) {
-    // Abbruch
+    // Abbruch (Algorithmus/Seller)
     logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: userOffer,
       accepted: false,
       finished: true,
-      deal_price: ''
+      deal_price: '',
+
+      // NEU:
+      proband_exit: '',
+      algo_exit: 'yes'
     });
 
     state.history.push({
@@ -449,7 +457,7 @@ function historyTable() {
 }
 
 /* ========================================================================== */
-/* Abbruch-Screen                                                             */
+/* Abbruch-Screen (Algorithmus)                                               */
 /* ========================================================================== */
 function viewAbort(chance) {
   app.innerHTML = `
@@ -459,6 +467,54 @@ function viewAbort(chance) {
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
       <strong>Die Verkäuferseite hat die Verhandlung beendet.</strong>
       <p class="muted" style="margin-top:8px;">Abbruchwahrscheinlichkeit in dieser Runde: ${chance}%</p>
+    </div>
+
+    <p><b>Du kannst nun entweder eine neue Runde spielen oder die Umfrage beantworten.</b></p>
+
+    <button id="restartBtn">Neue Verhandlung</button>
+    <button id="surveyBtn"
+      style="
+        margin-top:8px;
+        display:inline-block;
+        padding:8px 14px;
+        border-radius:9999px;
+        border:1px solid #d1d5db;
+        background:#e5e7eb;
+        color:#374151;
+        font-size:0.95rem;
+        cursor:pointer;
+      ">
+      Zur Umfrage
+    </button>
+
+    ${historyTable()}
+  `;
+
+  document.getElementById('restartBtn').onclick = () => {
+    state = newState();
+    viewVignette();
+  };
+
+  const surveyBtn = document.getElementById('surveyBtn');
+  if (surveyBtn) {
+    surveyBtn.onclick = () => {
+      window.location.href =
+        'https://docs.google.com/forms/d/e/1FAIpQLSc6iCkaIRN6q0eQwuP600oKS3za1BdP_Exe0PYd9oVscTZEpw/viewform?usp=dialog';
+    };
+  }
+}
+
+/* ========================================================================== */
+/* Abbruch-Screen (Proband)                                                   */
+/* ========================================================================== */
+function viewProbandAbort() {
+  app.innerHTML = `
+    <h1>Verhandlung abgebrochen</h1>
+    <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
+
+    <div class="card" style="padding:16px;border:1px dashed var(--accent);">
+      <strong>Du hast die Verhandlung beendet.</strong>
+      <p class="muted" style="margin-top:8px;">Es wurde keine Einigung erzielt.</p>
     </div>
 
     <p><b>Du kannst nun entweder eine neue Runde spielen oder die Umfrage beantworten.</b></p>
@@ -552,7 +608,17 @@ function viewNegotiate(errorMsg) {
         <button id="sendBtn">Gegenangebot senden</button>
       </div>
 
-      <button id="acceptBtn" class="ghost">Angebot annehmen</button>
+      <div class="row">
+        <button id="acceptBtn">Angebot annehmen</button>
+        <button id="abortBtn"
+          style="
+            background:#e5e7eb;
+            color:#374151;
+            border:1px solid #d1d5db;
+          ">
+          Verhandlung abbrechen
+        </button>
+      </div>
     </div>
 
     ${historyTable()}
@@ -580,13 +646,47 @@ function viewNegotiate(errorMsg) {
       proband_counter: '',
       accepted: true,
       finished: true,
-      deal_price: state.current_offer
+      deal_price: state.current_offer,
+
+      // NEU:
+      proband_exit: '',
+      algo_exit: ''
     });
 
     state.accepted = true;
     state.finished = true;
     state.deal_price = state.current_offer;
     viewThink(() => viewFinish(true));
+  };
+
+  document.getElementById('abortBtn').onclick = () => {
+    // Proband bricht aktiv ab
+    state.history.push({
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: null,
+      accepted: false
+    });
+
+    logRound({
+      runde: state.runde,
+      algo_offer: state.current_offer,
+      proband_counter: '',
+      accepted: false,
+      finished: true,
+      deal_price: '',
+
+      // NEU:
+      proband_exit: 'yes',
+      algo_exit: ''
+    });
+
+    state.accepted = false;
+    state.finished = true;
+    state.deal_price = null;
+    state.finish_reason = 'proband_abort';
+
+    viewThink(() => viewProbandAbort());
   };
 }
 
@@ -630,7 +730,11 @@ function handleSubmit(raw) {
       proband_counter: num,
       accepted: true,
       finished: true,
-      deal_price: num
+      deal_price: num,
+
+      // NEU:
+      proband_exit: '',
+      algo_exit: ''
     });
 
     state.accepted = true;
@@ -654,7 +758,11 @@ function handleSubmit(raw) {
     proband_counter: num,
     accepted: false,
     finished: false,
-    deal_price: ''
+    deal_price: '',
+
+    // NEU:
+    proband_exit: '',
+    algo_exit: ''
   });
 
   state.history.push({
@@ -709,7 +817,11 @@ function viewDecision() {
       proband_counter: '',
       accepted: true,
       finished: true,
-      deal_price: state.current_offer
+      deal_price: state.current_offer,
+
+      // NEU:
+      proband_exit: '',
+      algo_exit: ''
     });
 
     state.accepted = true;
@@ -732,7 +844,11 @@ function viewDecision() {
       proband_counter: '',
       accepted: false,
       finished: true,
-      deal_price: ''
+      deal_price: '',
+
+      // NEU:
+      proband_exit: '',
+      algo_exit: ''
     });
 
     state.accepted = false;
@@ -753,6 +869,8 @@ function viewFinish(accepted) {
     text = `Einigung in Runde ${state.runde} bei ${eur(dealPrice)}.`;
   } else if (state.finish_reason === 'abort') {
     text = `Verhandlung vom Verkäufer abgebrochen.`;
+  } else if (state.finish_reason === 'proband_abort') {
+    text = `Verhandlung von dir abgebrochen.`;
   } else {
     text = `Maximale Runden erreicht.`;
   }

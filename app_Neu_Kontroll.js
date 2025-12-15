@@ -144,11 +144,7 @@ function logRound(row) {
     proband_counter: row.proband_counter,
     accepted: row.accepted,
     finished: row.finished,
-    deal_price: row.deal_price,
-
-    // NEU: Abbruch-Flags
-    proband_exit: row.proband_exit ?? '',
-    algo_exit: row.algo_exit ?? ''
+    deal_price: row.deal_price
   };
 
   if (window.sendRow) {
@@ -344,18 +340,14 @@ function maybeAbort(userOffer) {
 
   const roll = randInt(1, 100);
   if (roll <= totalChance) {
-    // Abbruch (Algorithmus/Seller)
+    // Abbruch
     logRound({
       runde: state.runde,
       algo_offer: state.current_offer,
       proband_counter: userOffer,
       accepted: false,
       finished: true,
-      deal_price: '',
-
-      // NEU:
-      proband_exit: '',
-      algo_exit: 'yes'
+      deal_price: ''
     });
 
     state.history.push({
@@ -457,7 +449,7 @@ function historyTable() {
 }
 
 /* ========================================================================== */
-/* Abbruch-Screen (Algorithmus)                                               */
+/* Abbruch-Screen                                                             */
 /* ========================================================================== */
 function viewAbort(chance) {
   app.innerHTML = `
@@ -467,54 +459,6 @@ function viewAbort(chance) {
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
       <strong>Die Verkäuferseite hat die Verhandlung beendet.</strong>
       <p class="muted" style="margin-top:8px;">Abbruchwahrscheinlichkeit in dieser Runde: ${chance}%</p>
-    </div>
-
-    <p><b>Du kannst nun entweder eine neue Runde spielen oder die Umfrage beantworten.</b></p>
-
-    <button id="restartBtn">Neue Verhandlung</button>
-    <button id="surveyBtn"
-      style="
-        margin-top:8px;
-        display:inline-block;
-        padding:8px 14px;
-        border-radius:9999px;
-        border:1px solid #d1d5db;
-        background:#e5e7eb;
-        color:#374151;
-        font-size:0.95rem;
-        cursor:pointer;
-      ">
-      Zur Umfrage
-    </button>
-
-    ${historyTable()}
-  `;
-
-  document.getElementById('restartBtn').onclick = () => {
-    state = newState();
-    viewVignette();
-  };
-
-  const surveyBtn = document.getElementById('surveyBtn');
-  if (surveyBtn) {
-    surveyBtn.onclick = () => {
-      window.location.href =
-        'https://docs.google.com/forms/d/e/1FAIpQLSc6iCkaIRN6q0eQwuP600oKS3za1BdP_Exe0PYd9oVscTZEpw/viewform?usp=dialog';
-    };
-  }
-}
-
-/* ========================================================================== */
-/* Abbruch-Screen (Proband)                                                   */
-/* ========================================================================== */
-function viewProbandAbort() {
-  app.innerHTML = `
-    <h1>Verhandlung abgebrochen</h1>
-    <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
-
-    <div class="card" style="padding:16px;border:1px dashed var(--accent);">
-      <strong>Du hast die Verhandlung beendet.</strong>
-      <p class="muted" style="margin-top:8px;">Es wurde keine Einigung erzielt.</p>
     </div>
 
     <p><b>Du kannst nun entweder eine neue Runde spielen oder die Umfrage beantworten.</b></p>
@@ -608,17 +552,7 @@ function viewNegotiate(errorMsg) {
         <button id="sendBtn">Gegenangebot senden</button>
       </div>
 
-      <div class="row">
-        <button id="acceptBtn">Angebot annehmen</button>
-        <button id="abortBtn"
-          style="
-            background:#e5e7eb;
-            color:#374151;
-            border:1px solid #d1d5db;
-          ">
-          Verhandlung abbrechen
-        </button>
-      </div>
+      <button id="acceptBtn" class="ghost">Angebot annehmen</button>
     </div>
 
     ${historyTable()}
@@ -646,47 +580,13 @@ function viewNegotiate(errorMsg) {
       proband_counter: '',
       accepted: true,
       finished: true,
-      deal_price: state.current_offer,
-
-      // NEU:
-      proband_exit: '',
-      algo_exit: ''
+      deal_price: state.current_offer
     });
 
     state.accepted = true;
     state.finished = true;
     state.deal_price = state.current_offer;
     viewThink(() => viewFinish(true));
-  };
-
-  document.getElementById('abortBtn').onclick = () => {
-    // Proband bricht aktiv ab
-    state.history.push({
-      runde: state.runde,
-      algo_offer: state.current_offer,
-      proband_counter: null,
-      accepted: false
-    });
-
-    logRound({
-      runde: state.runde,
-      algo_offer: state.current_offer,
-      proband_counter: '',
-      accepted: false,
-      finished: true,
-      deal_price: '',
-
-      // NEU:
-      proband_exit: 'yes',
-      algo_exit: ''
-    });
-
-    state.accepted = false;
-    state.finished = true;
-    state.deal_price = null;
-    state.finish_reason = 'proband_abort';
-
-    viewThink(() => viewProbandAbort());
   };
 }
 
@@ -730,11 +630,40 @@ function handleSubmit(raw) {
       proband_counter: num,
       accepted: true,
       finished: true,
-      deal_price: num,
+      deal_price: num
+    });
 
-      // NEU:
-      proband_exit: '',
-      algo_exit: ''
+    state.accepted = true;
+    state.finished = true;
+    state.deal_price = num;
+    return viewThink(() => viewFinish(true));
+  }
+
+  /* NEU: Wenn der nächste Schritt des Verkäufers unter dem Käuferangebot läge,
+     nimmt der Verkäufer direkt das Käuferangebot an. */
+  const plannedNext = computeNextOffer(
+    prevOffer,
+    state.min_price,
+    num,
+    state.runde,
+    state.last_concession
+  );
+
+  if (num >= plannedNext) {
+    state.history.push({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: true
+    });
+
+    logRound({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: true,
+      finished: true,
+      deal_price: num
     });
 
     state.accepted = true;
@@ -746,7 +675,7 @@ function handleSubmit(raw) {
   // Muster/Warnung mit aktuellem Angebot aktualisieren
   updatePatternMessage(num);
 
-  // Abbrüche (inkl. 1500*f-Regel) werden ausschließlich ab Runde 4 zugelassen
+  // Abbrüche (inkl. 1500*f-Regel, aber erst ab Runde 4) über maybeAbort
   if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
@@ -758,11 +687,7 @@ function handleSubmit(raw) {
     proband_counter: num,
     accepted: false,
     finished: false,
-    deal_price: '',
-
-    // NEU:
-    proband_exit: '',
-    algo_exit: ''
+    deal_price: ''
   });
 
   state.history.push({
@@ -817,11 +742,7 @@ function viewDecision() {
       proband_counter: '',
       accepted: true,
       finished: true,
-      deal_price: state.current_offer,
-
-      // NEU:
-      proband_exit: '',
-      algo_exit: ''
+      deal_price: state.current_offer
     });
 
     state.accepted = true;
@@ -844,11 +765,7 @@ function viewDecision() {
       proband_counter: '',
       accepted: false,
       finished: true,
-      deal_price: '',
-
-      // NEU:
-      proband_exit: '',
-      algo_exit: ''
+      deal_price: ''
     });
 
     state.accepted = false;
@@ -869,8 +786,6 @@ function viewFinish(accepted) {
     text = `Einigung in Runde ${state.runde} bei ${eur(dealPrice)}.`;
   } else if (state.finish_reason === 'abort') {
     text = `Verhandlung vom Verkäufer abgebrochen.`;
-  } else if (state.finish_reason === 'proband_abort') {
-    text = `Verhandlung von dir abgebrochen.`;
   } else {
     text = `Maximale Runden erreicht.`;
   }

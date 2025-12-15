@@ -91,8 +91,8 @@ const eur = n =>
 function newState() {
   const factor = nextDimensionFactor();
 
-  const initialRaw  = BASE_INITIAL_OFFER * factor;
-  const floorRaw    = ABSOLUTE_FLOOR * factor;
+  const initialRaw   = BASE_INITIAL_OFFER * factor;
+  const floorRaw     = ABSOLUTE_FLOOR * factor;
   const initialOffer = Math.round(initialRaw);
   const floor        = Math.round(floorRaw);
   const stepAmount   = BASE_STEP_AMOUNT * factor;
@@ -376,7 +376,7 @@ function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConces
   const floor = Number(minPrice);
   const step  = Number(state.step_amount || BASE_STEP_AMOUNT);
 
-  const raw = prev - step;
+  const raw  = prev - step;
   const next = Math.max(floor, Math.min(raw, prev));
 
   return next;
@@ -520,7 +520,7 @@ function viewNegotiate(errorMsg) {
   const abortText =
     total === null
       ? '--'
-      : `${total}% (Basis: ${base}% + Warnaufschlag: ${extra}%)`;
+      : `${total}%`;
 
   app.innerHTML = `
     <h1>Verkaufsverhandlung</h1>
@@ -643,7 +643,6 @@ function handleSubmit(raw) {
   updatePatternMessage(num);
 
   // Abbrüche (inkl. 1500*f-Regel) werden ausschließlich ab Runde 4 zugelassen
-  // -> Logik steckt in maybeAbort
   if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);

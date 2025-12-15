@@ -52,7 +52,7 @@ const BASE_MIN_PRICE = CONFIG.MIN_PRICE;
 const BASE_STEP_AMOUNT = 500;
 
 /*
-   Fünf Verhandlungs-Dimensionen (Multiplikatoren 1x–5x)
+   Fünf Verhandlungs-Dimensionen:
 */
 const DIMENSION_FACTORS = [1, 2, 3, 4, 5];
 let dimensionQueue = [];
@@ -85,13 +85,13 @@ const eur = n => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR
 function newState(){
   const factor = nextDimensionFactor();
 
-  const initialRaw = BASE_INITIAL_OFFER * factor;
+  const initialRaw   = BASE_INITIAL_OFFER * factor;
   const initialOffer = Math.round(initialRaw);
 
-  const absFloorRaw = ABSOLUTE_FLOOR * factor;
+  const absFloorRaw  = ABSOLUTE_FLOOR * factor;
   const floorRounded = Math.round(absFloorRaw);
 
-  const stepAmount = BASE_STEP_AMOUNT * factor;
+  const stepAmount   = BASE_STEP_AMOUNT * factor;
 
   return {
     participant_id: crypto.randomUUID?.() || ('x_'+Date.now()+Math.random().toString(36).slice(2)),
@@ -108,7 +108,9 @@ function newState(){
     finished: false,
     accepted: false,
     patternMessage: '',
-    warningRounds: 0,
+    warningRounds: 0,       // Anzahl Runden mit aktivem Klein-Schritt-Warnmuster
+    smallStepChain: 0,      // wie viele kleine/gleiche Schritte in Folge
+    warningActive: false,   // ist Warnung in dieser Runde aktiv?
     deal_price: null,
     finish_reason: null,
     last_abort_chance: null
@@ -162,7 +164,7 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter){
 }
 
 /* ========================================================================== */
-/* ABBRUCHWAHRSCHEINLICHKEIT (Differenzmodell, 3000*f → 20 % in Runde 1)     */
+/* ABBRUCHWAHRSCHEINLICHKEIT (3000*f → 20 % in Runde 1)                       */
 /* ========================================================================== */
 function abortProbability(userOffer) {
   const seller = state.current_offer;
@@ -182,20 +184,29 @@ function abortProbability(userOffer) {
     chance = (diff / (3000 * f)) * 20;
   }
 
-  // auf 0–100 kappen
+  // Basischance auf 0–100 kappen
+  chance = Math.max(0, Math.min(100, chance));
+
+  // Zusatzrisiko durch Warnung (2 % pro Warnrunde)
+  if (state.warningActive && state.warningRounds > 0) {
+    chance = chance + 2 * state.warningRounds;
+  }
+
+  // final kappen
   chance = Math.max(0, Math.min(100, chance));
 
   return Math.round(chance);
 }
 
 /* ========================================================================== */
-/* maybeAbort – kein Abbruch vor Runde 4                                      */
+/* maybeAbort – echter Abbruch erst ab Runde 4                                */
 /* ========================================================================== */
 function maybeAbort(userOffer) {
   const chance = abortProbability(userOffer);
   state.last_abort_chance = chance;
 
-  // In den Runden 1–3 wird das Risiko nur angezeigt, aber nicht abgebrochen
+  // In den Runden 1–3 kein Abbruch durch Wahrscheinlichkeit,
+  // Risiko wird nur angezeigt.
   if (state.runde < 4) {
     return false;
   }
@@ -232,87 +243,81 @@ function maybeAbort(userOffer) {
 }
 
 /* ========================================================================== */
-/* Mustererkennung                                                            */
+/* Mustererkennung: gleiche / 100×f-Schritte                                  */
 /* ========================================================================== */
-function getThresholdForAmount(prev){
+function updatePatternMessage(currentOffer){
   const f = state.scale_factor || 1.0;
 
-  const A = 2250 * f;
-  const B = 3000 * f;
-  const C = 4000 * f;
-  const D = 5000 * f;
-
-  if (prev >= A && prev < B) return 0.05;
-  if (prev >= B && prev < C) return 0.04;
-  if (prev >= C && prev < D) return 0.03;
-  return null;
-}
-
-function updatePatternMessage(){
-  const f = state.scale_factor || 1.0;
-  const limit = UNACCEPTABLE_LIMIT * f;
-
-  const counters = [];
-  for (let h of state.history) {
-    let c = h.proband_counter;
-    if (c == null || c === '') continue;
-    c = Number(c);
-    if (!Number.isFinite(c)) continue;
-    if (c < limit) continue;
-    counters.push(c);
-  }
-  if (counters.length < 3) {
-    state.patternMessage = '';
-    state.warningRounds = 0;
+  const last = state.history[state.history.length - 1];
+  if (!last || last.proband_counter == null || last.proband_counter === '') {
+    state.patternMessage   = '';
+    state.smallStepChain   = 0;
+    state.warningActive    = false;
+    state.warningRounds    = 0;
     return;
   }
-  let chainLen = 1;
-  for (let j = 1; j < counters.length; j++) {
-    const prev = counters[j - 1];
-    const curr = counters[j];
-    const diff = curr - prev;
-    if (diff < 0) {
-      chainLen = 1;
-      continue;
-    }
-    const threshold = getThresholdForAmount(prev);
-    if (threshold == null) {
-      chainLen = 1;
-      continue;
-    }
-    if (diff <= prev * threshold) {
-      chainLen++;
-    } else {
-      chainLen = 1;
-    }
+
+  const lastBuyer = Number(last.proband_counter);
+  if (!Number.isFinite(lastBuyer)) {
+    state.patternMessage   = '';
+    state.smallStepChain   = 0;
+    state.warningActive    = false;
+    state.warningRounds    = 0;
+    return;
   }
-  if (chainLen >= 3) {
-    state.patternMessage =
-      'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung.';
-    state.warningRounds = chainLen;
-  } else {
+
+  const stepUp = currentOffer - lastBuyer;
+  const SMALL_STEP = 100 * f;
+
+  // nur nicht sinkende Angebote betrachten
+  if (stepUp < 0) {
+    state.smallStepChain = 0;
+    state.warningActive  = false;
     state.patternMessage = '';
-    state.warningRounds = 0;
+    // warningRounds nicht weiter erhöhen, aber nicht zwingend auf 0 setzen
+    return;
+  }
+
+  // "Kleine" Schritte: gleichbleibend oder +100×Multiplikator
+  if (stepUp === 0 || stepUp === SMALL_STEP) {
+    state.smallStepChain = (state.smallStepChain || 0) + 1;
+  } else {
+    state.smallStepChain = 0;
+    state.warningActive  = false;
+    state.patternMessage = '';
+    return;
+  }
+
+  // Ab 2 Runden in Folge Warnung aktiv
+  if (state.smallStepChain >= 2) {
+    state.warningActive  = true;
+    state.warningRounds  = (state.warningRounds || 0) + 1;
+    state.patternMessage =
+      'Mit solchen kleinen Erhöhungen wird das schwierig. Geh bitte ein Stück näher an deine Schmerzgrenze, dann finden wir schneller einen fairen Deal.';
+  } else {
+    state.warningActive  = false;
+    state.patternMessage = '';
   }
 }
 
 /* ========================================================================== */
-/* Angebotslogik (linear, Multiplikator-skalierte Schritte)                  */
+/* Angebotslogik (linear, skaliert)                                           */
 /* ========================================================================== */
 function computeNextOffer(prevOffer, minPrice, probandCounter, runde, lastConcession){
   const prev  = Number(prevOffer);
   const floor = Number(minPrice);
   const step  = Number(state.step_amount || BASE_STEP_AMOUNT);
 
-  const raw = prev - step;
+  const raw  = prev - step;
   const next = Math.max(floor, Math.min(raw, prev));
 
   return next;
 }
 
 /* ========================================================================== */
-/* Rendering: Vignette, Think, History                                        */
+/* Rendering                                                                  */
 /* ========================================================================== */
+
 function viewVignette(){
   app.innerHTML = `
     <h1>Designer-Verkaufsmesse</h1>
@@ -406,7 +411,6 @@ function viewAbort(chance){
     viewVignette();
   };
 
-  // Umfrage-Button → Google Forms
   const surveyBtn = document.getElementById('surveyBtn');
   if (surveyBtn) {
     surveyBtn.onclick = () => {
@@ -424,8 +428,8 @@ function viewNegotiate(errorMsg){
     ? state.last_abort_chance
     : null;
 
-  // Farbskala an das neue Risikoniveau angepasst
-  let color = '#16a34a'; // grün
+  // Farbskala für das neue Risikoniveau
+  let color = '#16a34a'; // grün (bis 20 %)
   if (abortChance !== null) {
     if (abortChance > 40) color = '#dc2626';   // rot
     else if (abortChance > 20) color = '#eab308'; // gelb
@@ -508,7 +512,7 @@ function handleSubmit(raw){
     return viewNegotiate('Bitte eine gültige Zahl ≥ 0 eingeben.');
   }
 
-  // Kein niedrigeres Gegenangebot als in der Vorrunde
+  // kein niedrigeres Gegenangebot als in der Vorrunde
   const last = state.history[state.history.length - 1];
   if (last && last.proband_counter != null && last.proband_counter !== '') {
     const lastBuyer = Number(last.proband_counter);
@@ -520,6 +524,36 @@ function handleSubmit(raw){
   }
 
   const prevOffer = state.current_offer;
+  const f = state.scale_factor || 1.0;
+  const extremeThreshold = EXTREME_BASE * f;
+
+  /* Sofortabbruch bei extrem niedrigem Angebot (< 1500×Multiplikator) */
+  if (num < extremeThreshold) {
+
+    state.last_abort_chance = 100;
+
+    state.history.push({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: false
+    });
+
+    logRound({
+      runde: state.runde,
+      algo_offer: prevOffer,
+      proband_counter: num,
+      accepted: false,
+      finished: true,
+      deal_price: ''
+    });
+
+    state.finished = true;
+    state.accepted = false;
+    state.finish_reason = 'abort';
+
+    return viewAbort(100);
+  }
 
   /* Auto-Accept (Verhandlungsstil unverändert) */
   if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
@@ -540,13 +574,16 @@ function handleSubmit(raw){
       deal_price: num
     });
 
-    state.accepted = true;
-    state.finished = true;
+    state.accepted   = true;
+    state.finished   = true;
     state.deal_price = num;
     return viewThink(() => viewFinish(true));
   }
 
-  /* Neue Abbruchwahrscheinlichkeit – echter Abbruch erst ab Runde 4 */
+  // Mustererkennung VOR der Abbruchentscheidung aktualisieren
+  updatePatternMessage(num);
+
+  /* Abbruchwahrscheinlichkeit (Abbruch erst ab Runde 4) */
   if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
@@ -568,14 +605,11 @@ function handleSubmit(raw){
     accepted: false
   });
 
-  // Pattern-Erkennung aktualisieren (Warntext, warningRounds)
-  updatePatternMessage();
-
-  state.current_offer = next;
+  state.current_offer   = next;
   state.last_concession = concession;
 
   if (state.runde >= state.max_runden) {
-    state.finished = true;
+    state.finished      = true;
     state.finish_reason = 'max_rounds';
     return viewThink(() => viewDecision());
   }
@@ -620,8 +654,8 @@ function viewDecision(){
       deal_price: state.current_offer
     });
 
-    state.accepted = true;
-    state.finished = true;
+    state.accepted   = true;
+    state.finished   = true;
     state.deal_price = state.current_offer;
     viewThink(() => viewFinish(true));
   };
@@ -644,8 +678,8 @@ function viewDecision(){
       deal_price: ''
     });
 
-    state.accepted = false;
-    state.finished = true;
+    state.accepted      = false;
+    state.finished      = true;
     state.finish_reason = 'max_rounds';
     viewThink(() => viewFinish(false));
   };
@@ -690,9 +724,7 @@ function viewFinish(accepted){
       Zur Umfrage
     </button>
 
-    <p class="muted" style="margin-top:8px;">
-      Du kannst nun entweder eine neue Verhandlung starten oder die Umfrage beantworten.
-    </p>
+    <p style="margin-top:8px;"><strong>Du kannst nun entweder eine neue Verhandlung starten oder die Umfrage beantworten.</strong></p>
 
     ${historyTable()}
   `;
@@ -714,3 +746,4 @@ function viewFinish(accepted){
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+

@@ -274,7 +274,7 @@ function updatePatternMessage(currentBuyerOffer) {
       state.warningRounds += 1;        // weitere Warnrunde
     }
     state.patternMessage =
-      'Mit solchen kleinen Erhöhungen wird das schwierig. Geh bitte ein Stück näher an deine Schmerzgrenze, dann finden wir bestimmt schneller einen fairen Deal.';
+      'Mit derart kleinen Erhöhungen kommen wir eher unwahrscheinlich zu einer Einigung.';
   } else {
     // kein Muster mehr
     state.patternMessage = '';
@@ -464,7 +464,7 @@ function viewAbort(chance) {
     <p class="muted">Teilnehmer-ID: ${state.participant_id}</p>
 
     <div class="card" style="padding:16px;border:1px dashed var(--accent);">
-      <strong>Die Verkäuferseite hat die Verhandlung beendet.</strong>
+      <strong>Die Verkäuferseite hat die Verhandlung beendet, da er mit Ihrem Gegenangebot nicht zufrieden war.</strong>
       <p class="muted" style="margin-top:8px;">Abbruchwahrscheinlichkeit in dieser Runde: ${chance}%</p>
     </div>
 
@@ -932,3 +932,4 @@ function viewFinish(accepted) {
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
+

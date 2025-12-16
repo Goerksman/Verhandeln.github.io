@@ -121,9 +121,9 @@ function newState() {
     deal_price: null,
     finish_reason: null,
 
-    last_abort_base: null,     // Basisrisiko aus Differenz
-    last_abort_extra: 0,       // Zusatzrisiko durch Warnung
-    last_abort_chance: null    // Gesamt (Basis + Extra)
+    last_abort_base: null,     // Basisrisiko aus Differenz (0–30 %)
+    last_abort_extra: 0,       // Zusatzrisiko durch Warnung (+2 % pro Warnrunde)
+    last_abort_chance: null    // Gesamt (Basis + Extra, 0–100 %)
   };
 }
 
@@ -203,7 +203,7 @@ function abortProbability(sellerOffer, buyerOffer) {
 /* ========================================================================== */
 /* Mustererkennung + Warnlogik                                                */
 /*  - Relevante Angebote: >= 2250 * Faktor                                   */
-/*  - Gleiches Angebot ODER Steigerung <= 100 * Faktor                       */
+/*  - Gleiches Angebot ODER Steigerung ≤ 100 * Faktor                        */
 /*    → „kleiner Schritt“                                                    */
 /*  - Nach 2 aufeinanderfolgenden kleinen Schritten Warnung                  */
 /*  - Warnung bleibt aktiv, solange das Muster anhält                        */
@@ -252,7 +252,7 @@ function updatePatternMessage(currentBuyerOffer) {
       continue;
     }
 
-    // kleiner Schritt: gleichbleibend oder <= 100 * Faktor
+    // kleiner Schritt: gleichbleibend oder ≤ 100 * Faktor
     if (diff === 0 || (diff > 0 && diff <= SMALL_STEP)) {
       chain++;
     } else {
@@ -505,9 +505,9 @@ function viewNegotiate(errorMsg) {
   const total = base === null ? null : Math.min(100, base + extra);
 
   // Farbskala nach Gesamt-Abbruchwahrscheinlichkeit:
-  // bis inkl. 20 % → grün
-  // über 20 % bis inkl. 40 % → orange
-  // über 40 % → rot
+  // < 20 % → grün
+  // 20–40 % → orange
+  // > 40 % → rot
   let color = '#16a34a'; // grün
   if (total !== null) {
     if (total > 40) {
@@ -639,8 +639,9 @@ function handleSubmit(raw) {
     return viewThink(() => viewFinish(true));
   }
 
-  /* NEU: Wenn der nächste Schritt des Verkäufers unter dem Käuferangebot läge,
-     nimmt der Verkäufer direkt das Käuferangebot an. */
+  /* NEU: Wenn das Angebot des Käufers > 5 % unter dem letzten Verkäuferangebot liegt,
+     aber mindestens so hoch ist wie der nächste geplante Schritt des Verkäufers,
+     nimmt der Verkäufer ebenfalls das Käuferangebot an. */
   const plannedNext = computeNextOffer(
     prevOffer,
     state.min_price,
@@ -648,8 +649,9 @@ function handleSubmit(raw) {
     state.runde,
     state.last_concession
   );
+  const diffFromPrev = Math.abs(prevOffer - num);
 
-  if (num >= plannedNext) {
+  if (num >= plannedNext && num < prevOffer && diffFromPrev > prevOffer * 0.05) {
     state.history.push({
       runde: state.runde,
       algo_offer: prevOffer,

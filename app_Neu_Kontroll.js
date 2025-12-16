@@ -121,7 +121,7 @@ function newState() {
     deal_price: null,
     finish_reason: null,
 
-    last_abort_base: null,     // Basisrisiko aus Differenz (0–30 %)
+    last_abort_base: null,     // Basisrisiko aus Differenz (0–25 %)
     last_abort_extra: 0,       // Zusatzrisiko durch Warnung (+2 % pro Warnrunde)
     last_abort_chance: null    // Gesamt (Basis + Extra, 0–100 %)
   };
@@ -146,7 +146,7 @@ function logRound(row) {
     finished: row.finished,
     deal_price: row.deal_price,
 
-    // NEU: Exit-Felder (werden nur befüllt, wenn relevant)
+    // Exit-Felder (werden nur befüllt, wenn relevant)
     proband_exit: row.proband_exit ?? '',
     algo_exit: row.algo_exit ?? ''
   };
@@ -184,8 +184,8 @@ function shouldAutoAccept(initialOffer, minPrice, prevOffer, counter) {
 
 /* ========================================================================== */
 /* Abbruchwahrscheinlichkeit (Differenzmodell)                                */
-/*  - Bei Differenz = 3000 * Faktor → 30 % Basisrisiko                       */
-/*  - Linear skaliert, Maximalwert 30 % (ohne Warnaufschlag)                 */
+/*  - Bei Differenz = 3000 * Faktor → 25 % Basisrisiko                       */
+/*  - Linear skaliert, Maximalwert 25 % (ohne Warnaufschlag)                 */
 /* ========================================================================== */
 function abortProbability(sellerOffer, buyerOffer) {
   const seller = Number(sellerOffer);
@@ -196,10 +196,10 @@ function abortProbability(sellerOffer, buyerOffer) {
 
   const diff = Math.abs(seller - buyer);
 
-  // Linear auf 0–30 % bis 3000 * Faktor
-  let chance = (diff / (3000 * f)) * 30;
+  // Linear auf 0–25 % bis 3000 * Faktor
+  let chance = (diff / (3000 * f)) * 25;
   if (chance < 0) chance = 0;
-  if (chance > 30) chance = 30;
+  if (chance > 25) chance = 25;
 
   return Math.round(chance);
 }
@@ -286,8 +286,8 @@ function updatePatternMessage(currentBuyerOffer) {
 /* maybeAbort                                                                 */
 /*  - berechnet Basisrisiko (Differenz)                                      */
 /*  - erhöht Risiko um 2 % * warningRounds bei aktiver Warnung              */
-/*  - kein Abbruch vor Runde 4                                              */
-/*  - bei < 1500 * Faktor ab Runde 4 → effektiv 100 %                        */
+/*  - kein Abbruch vor Runde 3                                              */
+/*  - bei < 1500 * Faktor ab Runde 3 → effektiv 100 %                        */
 /*  - Wahrscheinlichkeit sinkt nicht, wenn das Gegenangebot gleich bleibt   */
 /*    (im Vergleich zur Vorrunde)                                           */
 /* ========================================================================== */
@@ -320,15 +320,15 @@ function maybeAbort(userOffer) {
   let totalChance = baseChance + extraChance;
   if (totalChance > 100) totalChance = 100;
 
-  // Kein Abbruch vor Runde 4: nur anzeigen, nicht beenden
-  if (state.runde <= 3) {
+  // Kein Abbruch vor Runde 3: nur anzeigen, nicht beenden
+  if (state.runde <= 2) {
     state.last_abort_base   = baseChance;
     state.last_abort_extra  = extraChance;
     state.last_abort_chance = totalChance;
     return false;
   }
 
-  // Ab Runde 4: Extrem-Lowball < 1500 * Faktor → effektiv 100 %
+  // Ab Runde 3: Extrem-Lowball < 1500 * Faktor → effektiv 100 %
   if (buyer < extremeThreshold) {
     const currentTotal = baseChance + extraChance;
     if (currentTotal < 100) {
@@ -352,7 +352,6 @@ function maybeAbort(userOffer) {
       accepted: false,
       finished: true,
       deal_price: '',
-      // NEU:
       proband_exit: '',
       algo_exit: 'yes'
     });
@@ -456,7 +455,7 @@ function historyTable() {
 }
 
 /* ========================================================================== */
-/* Abbruch-Screen                                                             */
+/* Abbruch-Screen (Algo)                                                     */
 /* ========================================================================== */
 function viewAbort(chance) {
   app.innerHTML = `
@@ -669,7 +668,6 @@ function viewNegotiate(errorMsg) {
       accepted: false,
       finished: true,
       deal_price: '',
-      // NEU:
       proband_exit: 'yes',
       algo_exit: ''
     });
@@ -706,9 +704,8 @@ function handleSubmit(raw) {
 
   const prevOffer = state.current_offer;
   const f = state.scale_factor || 1.0;
-  const extremeThreshold = EXTREME_BASE * f;
 
-  /* Auto-Accept (Verhandlungsstil unverändert) */
+  /* Auto-Accept */
   if (shouldAutoAccept(state.initial_offer, state.min_price, prevOffer, num)) {
     state.history.push({
       runde: state.runde,
@@ -732,7 +729,8 @@ function handleSubmit(raw) {
     return viewThink(() => viewFinish(true));
   }
 
-  /* NEU: Wenn das Angebot des Käufers > 5 % unter dem letzten Verkäuferangebot liegt,
+  /* Zusatzregel:
+     Wenn das Angebot des Käufers > 5 % unter dem letzten Verkäuferangebot liegt,
      aber mindestens so hoch ist wie der nächste geplante Schritt des Verkäufers,
      nimmt der Verkäufer ebenfalls das Käuferangebot an. */
   const plannedNext = computeNextOffer(
@@ -770,7 +768,7 @@ function handleSubmit(raw) {
   // Muster/Warnung mit aktuellem Angebot aktualisieren
   updatePatternMessage(num);
 
-  // Abbrüche (inkl. 1500*f-Regel, aber erst ab Runde 4) über maybeAbort
+  // Abbrüche (Differenzmodell + Warnaufschlag, ab Runde 3) über maybeAbort
   if (maybeAbort(num)) return;
 
   const next = computeNextOffer(prevOffer, state.min_price, num, state.runde, state.last_concession);
@@ -932,4 +930,3 @@ function viewFinish(accepted) {
 /* Start                                                                      */
 /* ========================================================================== */
 viewVignette();
-
